@@ -4,13 +4,9 @@ import { Message, stripAnsi } from '../lib/openclaw'
 import { resolveToolDisplay, extractToolDetail } from '../lib/openclaw/tool-display'
 import { ToolIcon } from './ToolIcon'
 import { SubagentBlock } from './SubagentBlock'
+import { SafeMarkdown } from './SafeMarkdown'
 import { format, isSameDay } from 'date-fns'
-import { marked } from 'marked'
 import logoUrl from '../../build/icon.png'
-
-// Configure marked for chat-friendly rendering: single newlines become <br>,
-// GFM tables/strikethrough enabled, synchronous parsing.
-marked.setOptions({ breaks: true, gfm: true, async: false })
 
 export function ChatArea() {
   const { messages: allMessages, agents, currentAgentId, sessions, currentSessionId, activeSubagents, openSubagentPopout, openToolCallPopout } = useStore()
@@ -363,38 +359,6 @@ function ToolCallBlock({ toolCall, onOpenPopout }: { toolCall: ToolCall; onOpenP
   )
 }
 
-// Custom marked renderer that wraps fenced code blocks with a copy button
-const renderer = new marked.Renderer()
-const originalCode = renderer.code.bind(renderer)
-renderer.code = function (this: unknown, ...args: Parameters<typeof originalCode>) {
-  const html = originalCode.apply(this, args)
-  return `<div class="code-block-wrapper"><button class="code-copy-btn" type="button" aria-label="Copy code"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg></button>${html}</div>`
-}
-
 function MessageContent({ content }: { content: string }) {
-  const ref = useRef<HTMLDivElement>(null)
-  const html = useMemo(
-    () => marked.parse(stripAnsi(content), { async: false, renderer }) as string,
-    [content]
-  )
-
-  useEffect(() => {
-    const el = ref.current
-    if (!el) return
-    const handler = (e: MouseEvent) => {
-      const btn = (e.target as HTMLElement).closest('.code-copy-btn')
-      if (!btn) return
-      const wrapper = btn.closest('.code-block-wrapper')
-      const code = wrapper?.querySelector('code')
-      if (!code) return
-      navigator.clipboard.writeText(code.textContent || '').then(() => {
-        btn.classList.add('copied')
-        setTimeout(() => btn.classList.remove('copied'), 2000)
-      })
-    }
-    el.addEventListener('click', handler)
-    return () => el.removeEventListener('click', handler)
-  }, [html])
-
-  return <div className="markdown-content" ref={ref} dangerouslySetInnerHTML={{ __html: html }} />
+  return <SafeMarkdown content={content} />
 }

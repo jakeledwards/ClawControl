@@ -2,9 +2,7 @@ import { useState, useRef, useEffect, useMemo } from 'react'
 import { OpenClawClient, Message, stripAnsi } from '../lib/openclaw'
 import { resolveToolDisplay, extractToolDetail } from '../lib/openclaw/tool-display'
 import { ToolIcon } from './ToolIcon'
-import { marked } from 'marked'
-
-marked.setOptions({ breaks: true, gfm: true, async: false })
+import { SafeMarkdown } from './SafeMarkdown'
 
 interface ToolCallInfo {
   toolCallId: string
@@ -221,11 +219,7 @@ function ViewerMessage({ message }: { message: Message }) {
 }
 
 function ViewerMarkdown({ content }: { content: string }) {
-  const html = useMemo(
-    () => marked.parse(stripAnsi(content), { async: false }) as string,
-    [content]
-  )
-  return <div className="markdown-content" dangerouslySetInnerHTML={{ __html: html }} />
+  return <SafeMarkdown content={content} />
 }
 
 function ViewerToolCall({ toolCall }: { toolCall: ToolCallInfo }) {

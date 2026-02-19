@@ -6,6 +6,95 @@ import crypto from 'crypto'
 let mainWindow: BrowserWindow | null = null
 const trustedHosts = new Set<string>()
 
+type NetFetchOptions = { method?: string; headers?: Record<string, string>; body?: string }
+
+interface NetFetchRule {
+  host: string
+  allowsPath: (pathname: string) => boolean
+  methods: Set<string>
+  allowBody: boolean
+  allowedHeaders: Set<string>
+}
+
+const MAX_FETCH_BODY_BYTES = 128 * 1024
+const MAX_FETCH_RESPONSE_BYTES = 2 * 1024 * 1024
+
+const NET_FETCH_RULES: NetFetchRule[] = [
+  {
+    host: 'clawhub.ai',
+    allowsPath: (pathname) => pathname.startsWith('/api/v1/'),
+    methods: new Set(['GET']),
+    allowBody: false,
+    allowedHeaders: new Set(['accept']),
+  },
+  {
+    host: 'wry-manatee-359.convex.cloud',
+    allowsPath: (pathname) => pathname === '/api/query' || pathname === '/api/action',
+    methods: new Set(['POST']),
+    allowBody: true,
+    allowedHeaders: new Set(['content-type', 'convex-client', 'accept']),
+  },
+]
+
+function resolveNetFetchRule(parsed: URL): NetFetchRule | null {
+  return NET_FETCH_RULES.find((rule) => rule.host === parsed.hostname && rule.allowsPath(parsed.pathname)) || null
+}
+
+function sanitizeNetFetchHeaders(headers: NetFetchOptions['headers'], allowed: Set<string>): Record<string, string> | undefined {
+  if (!headers) return undefined
+  const sanitized: Record<string, string> = {}
+  for (const [rawKey, rawValue] of Object.entries(headers)) {
+    if (typeof rawKey !== 'string' || typeof rawValue !== 'string') {
+      throw new Error('Invalid headers')
+    }
+    const key = rawKey.trim().toLowerCase()
+    if (!key || !allowed.has(key)) {
+      throw new Error(`Header not allowed: ${rawKey}`)
+    }
+    if (rawValue.length > 8192) {
+      throw new Error('Header value too long')
+    }
+    sanitized[key] = rawValue
+  }
+  return Object.keys(sanitized).length > 0 ? sanitized : undefined
+}
+
+function sanitizeNetFetchBody(body: unknown, allowBody: boolean, method: string): string | undefined {
+  if (body === undefined) return undefined
+  if (typeof body !== 'string') throw new Error('Invalid request body')
+  if (!allowBody || method !== 'POST') throw new Error('Request body is not allowed')
+  if (Buffer.byteLength(body, 'utf8') > MAX_FETCH_BODY_BYTES) {
+    throw new Error('Request body too large')
+  }
+  return body
+}
+
+function normalizeNetFetchRequest(url: string, options?: NetFetchOptions): { url: string; options: NetFetchOptions } {
+  if (typeof url !== 'string') throw new Error('Invalid URL')
+  if (url.length > 2048) throw new Error('URL too long')
+
+  const parsed = new URL(url)
+  if (parsed.protocol !== 'https:') throw new Error('Only HTTPS URLs are allowed')
+  if (parsed.username || parsed.password) throw new Error('Credentials in URL are not allowed')
+  if (parsed.port && parsed.port !== '443') throw new Error('Custom ports are not allowed')
+
+  const rule = resolveNetFetchRule(parsed)
+  if (!rule) throw new Error('URL is not allowed')
+
+  const method = (options?.method || 'GET').toUpperCase()
+  if (!rule.methods.has(method)) {
+    throw new Error(`Method not allowed: ${method}`)
+  }
+
+  const headers = sanitizeNetFetchHeaders(options?.headers, rule.allowedHeaders)
+  const body = sanitizeNetFetchBody(options?.body, rule.allowBody, method)
+
+  return {
+    url: parsed.toString(),
+    options: { method, headers, body },
+  }
+}
+
 // Path to persist trusted hosts
 function getTrustedHostsPath(): string {
   const userDataPath = app.getPath('userData')
@@ -330,33 +419,38 @@ ipcMain.handle('toolcall:openPopout', async (_event, params: {
   }
 })
 
-// Proxy fetch for CORS-restricted URLs (e.g. ClawHub API, Convex)
-ipcMain.handle('net:fetchUrl', async (_event, url: string, options?: { method?: string; headers?: Record<string, string>; body?: string }) => {
-  // Only allow https URLs
-  const parsed = new URL(url)
-  if (parsed.protocol !== 'https:') {
-    throw new Error('Only HTTPS URLs are allowed')
-  }
-
+// Proxy fetch for CORS-restricted URLs (limited to known ClawHub/Convex endpoints).
+ipcMain.handle('net:fetchUrl', async (_event, url: string, options?: NetFetchOptions) => {
+  const normalized = normalizeNetFetchRequest(url, options)
   const { net } = await import('electron')
+
   return new Promise<string>((resolve, reject) => {
     const request = net.request({
-      url,
-      method: options?.method || 'GET'
+      url: normalized.url,
+      method: normalized.options.method || 'GET',
     })
-    if (options?.headers) {
-      for (const [key, value] of Object.entries(options.headers)) {
+
+    if (normalized.options.headers) {
+      for (const [key, value] of Object.entries(normalized.options.headers)) {
         request.setHeader(key, value)
       }
     }
-    let body = ''
+
+    let responseText = ''
+    let responseSize = 0
     request.on('response', (response) => {
       response.on('data', (chunk) => {
-        body += chunk.toString()
+        const text = chunk.toString()
+        responseSize += Buffer.byteLength(text, 'utf8')
+        if (responseSize > MAX_FETCH_RESPONSE_BYTES) {
+          request.destroy(new Error('Response too large'))
+          return
+        }
+        responseText += text
       })
       response.on('end', () => {
         if (response.statusCode && response.statusCode >= 200 && response.statusCode < 300) {
-          resolve(body)
+          resolve(responseText)
         } else {
           reject(new Error(`HTTP ${response.statusCode}`))
         }
@@ -364,126 +458,12 @@ ipcMain.handle('net:fetchUrl', async (_event, url: string, options?: { method?: 
       response.on('error', reject)
     })
     request.on('error', reject)
-    if (options?.body) {
-      request.write(options.body)
+
+    if (normalized.options.body) {
+      request.write(normalized.options.body)
     }
     request.end()
   })
-})
-
-// Extract ZIP buffer to a target directory using pure Node.js (no external commands)
-async function extractZipToDir(zipBuffer: Buffer, targetDir: string): Promise<string[]> {
-  const fs = await import('fs/promises')
-  const path = await import('path')
-  const zlib = await import('zlib')
-  const extractedFiles: string[] = []
-
-  // Find End of Central Directory record (signature 0x06054b50)
-  let eocdOffset = -1
-  for (let i = zipBuffer.length - 22; i >= Math.max(0, zipBuffer.length - 65557); i--) {
-    if (zipBuffer.readUInt32LE(i) === 0x06054b50) {
-      eocdOffset = i
-      break
-    }
-  }
-  if (eocdOffset === -1) throw new Error('Invalid ZIP file: no end-of-central-directory record')
-
-  const cdEntries = zipBuffer.readUInt16LE(eocdOffset + 10)
-  const cdOffset = zipBuffer.readUInt32LE(eocdOffset + 16)
-
-  // Collect file entries from central directory
-  const entries: Array<{ fileName: string; compressionMethod: number; compressedSize: number; localHeaderOffset: number }> = []
-  let offset = cdOffset
-  for (let i = 0; i < cdEntries; i++) {
-    if (offset + 46 > zipBuffer.length) break
-    if (zipBuffer.readUInt32LE(offset) !== 0x02014b50) break
-
-    const compressionMethod = zipBuffer.readUInt16LE(offset + 10)
-    const compressedSize = zipBuffer.readUInt32LE(offset + 20)
-    const fileNameLength = zipBuffer.readUInt16LE(offset + 28)
-    const extraFieldLength = zipBuffer.readUInt16LE(offset + 30)
-    const commentLength = zipBuffer.readUInt16LE(offset + 32)
-    const localHeaderOffset = zipBuffer.readUInt32LE(offset + 42)
-    const fileName = zipBuffer.toString('utf8', offset + 46, offset + 46 + fileNameLength)
-    offset += 46 + fileNameLength + extraFieldLength + commentLength
-
-    if (fileName.includes('..') || path.isAbsolute(fileName)) continue
-    entries.push({ fileName, compressionMethod, compressedSize, localHeaderOffset })
-  }
-
-  // Strip common root directory prefix if all entries share one
-  const firstSlash = entries.length > 0 ? entries[0].fileName.indexOf('/') : -1
-  let stripPrefix = ''
-  if (firstSlash > 0) {
-    const candidate = entries[0].fileName.substring(0, firstSlash + 1)
-    if (entries.every(e => e.fileName.startsWith(candidate))) {
-      stripPrefix = candidate
-    }
-  }
-
-  // Extract files
-  for (const entry of entries) {
-    const relativeName = stripPrefix ? entry.fileName.substring(stripPrefix.length) : entry.fileName
-    if (!relativeName || relativeName.endsWith('/')) continue
-
-    const localFileNameLen = zipBuffer.readUInt16LE(entry.localHeaderOffset + 26)
-    const localExtraLen = zipBuffer.readUInt16LE(entry.localHeaderOffset + 28)
-    const dataOffset = entry.localHeaderOffset + 30 + localFileNameLen + localExtraLen
-
-    let fileData: Buffer
-    if (entry.compressionMethod === 0) {
-      fileData = zipBuffer.subarray(dataOffset, dataOffset + entry.compressedSize)
-    } else if (entry.compressionMethod === 8) {
-      const compressed = zipBuffer.subarray(dataOffset, dataOffset + entry.compressedSize)
-      fileData = zlib.inflateRawSync(compressed)
-    } else {
-      console.warn(`[clawhub] Skipping ${relativeName}: unsupported compression method ${entry.compressionMethod}`)
-      continue
-    }
-
-    const filePath = path.join(targetDir, relativeName)
-    await fs.mkdir(path.dirname(filePath), { recursive: true })
-    await fs.writeFile(filePath, fileData)
-    extractedFiles.push(relativeName)
-  }
-
-  return extractedFiles
-}
-
-// Download a ClawHub skill ZIP and extract to a target directory
-ipcMain.handle('clawhub:install', async (_event, slug: string, targetDir: string) => {
-  // Validate slug
-  if (!/^[a-zA-Z0-9_-]+$/.test(slug)) {
-    throw new Error(`Invalid skill slug: ${slug}`)
-  }
-
-  const fs = await import('fs/promises')
-
-  // Download ZIP from ClawHub API
-  const { net } = await import('electron')
-  const downloadUrl = `https://clawhub.ai/api/v1/download?slug=${encodeURIComponent(slug)}`
-  const zipBuffer = await new Promise<Buffer>((resolve, reject) => {
-    const request = net.request({ url: downloadUrl, method: 'GET' })
-    const chunks: Buffer[] = []
-    request.on('response', (response) => {
-      if (response.statusCode && (response.statusCode < 200 || response.statusCode >= 300)) {
-        reject(new Error(`Download failed: HTTP ${response.statusCode}`))
-        return
-      }
-      response.on('data', (chunk) => { chunks.push(chunk as Buffer) })
-      response.on('end', () => resolve(Buffer.concat(chunks)))
-      response.on('error', reject)
-    })
-    request.on('error', reject)
-    request.end()
-  })
-
-  // Remove existing skill dir if present, then extract
-  await fs.rm(targetDir, { recursive: true, force: true })
-  await fs.mkdir(targetDir, { recursive: true })
-  const extractedFiles = await extractZipToDir(zipBuffer, targetDir)
-
-  return { ok: true, files: extractedFiles }
 })
 
 // --- Ed25519 crypto (Node.js, since Chromium Web Crypto lacks Ed25519) ---

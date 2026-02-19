@@ -377,18 +377,6 @@ export async function corsFetch(url: string, options?: { method?: string; header
   return await res.text()
 }
 
-// Download and install a ClawHub skill to a target directory (Electron only)
-export async function clawhubInstall(slug: string, targetDir: string): Promise<string[]> {
-  const platform = getPlatform()
-
-  if (platform === 'electron' && (window as any).electronAPI?.clawhubInstall) {
-    const result = await (window as any).electronAPI.clawhubInstall(slug, targetDir)
-    return result.files || []
-  }
-
-  throw new Error('Skill install is only supported in the desktop app')
-}
-
 // App visibility tracking
 let _appIsActive = true
 
