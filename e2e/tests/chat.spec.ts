@@ -218,4 +218,33 @@ test.describe('Chat', () => {
       }
     }
   })
+
+  test('enter does not submit while IME composition is active', async ({ connectedPage, mockServer }) => {
+    const page = connectedPage
+    const input = page.getByTestId('message-input')
+
+    await input.focus()
+    await input.fill('ni')
+
+    // Simulate IME-active Enter (React should see nativeEvent.isComposing=true)
+    await input.dispatchEvent('keydown', {
+      key: 'Enter',
+      code: 'Enter',
+      bubbles: true,
+      cancelable: true,
+      isComposing: true,
+    })
+
+    // Should NOT submit while composing
+    const beforeHistory = await mockServer.getHistory('chat.send')
+    expect(beforeHistory.length).toBe(0)
+
+    // After composition commit, Enter should submit normally
+    await input.dispatchEvent('compositionend', { bubbles: true })
+    await input.fill('你好')
+    await input.press('Enter')
+
+    const afterHistory = await mockServer.getHistory('chat.send')
+    expect(afterHistory.length).toBeGreaterThanOrEqual(1)
+  })
 })
