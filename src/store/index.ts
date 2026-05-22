@@ -138,6 +138,12 @@ interface AppState {
   connecting: boolean
   connectionError: string | null
   setConnectionError: (error: string | null) => void
+  /** Negotiated protocol version from hello-ok. Null when not yet connected. */
+  protocolVersion: number | null
+  /** Gateway server version from hello-ok (e.g. "2026.5.20"). Null when not yet connected. */
+  gatewayServerVersion: string | null
+  /** Recovery hint from v4 auth errors (e.g. "retry_with_device_token"). Null when no hint. */
+  connectionErrorHint: string | null
   client: OpenClawClient | null
   deviceName: string
   setDeviceName: (name: string) => void
@@ -585,6 +591,9 @@ export const useStore = create<AppState>()(
           connected: false,
           connecting: false,
           connectionError: null,
+          protocolVersion: null,
+          gatewayServerVersion: null,
+          connectionErrorHint: null,
           sessions: [],
           messages: [],
           currentSessionId: null,
@@ -643,6 +652,9 @@ export const useStore = create<AppState>()(
       connecting: false,
       connectionError: null,
       setConnectionError: (error) => set({ connectionError: error }),
+      protocolVersion: null,
+      gatewayServerVersion: null,
+      connectionErrorHint: null,
       client: null,
       nodeEnabled: false,
       setNodeEnabled: (enabled) => {
