@@ -86,6 +86,9 @@ export class OpenClawClient {
   private networkChangeHandler: (() => void) | null = null
   /** Timer ID for pending reconnect attempt (so disconnect() can cancel it). */
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  /** One-shot minimum delay (ms) for the NEXT reconnect attempt, e.g. from
+   *  a v4 UNAVAILABLE/startup-sidecars retryAfterMs hint. Cleared after use. */
+  private nextReconnectDelayFloorMs: number | null = null
 
   // Per-session stream tracking — allows concurrent agent conversations
   // without cross-contaminating stream text buffers.
@@ -279,7 +282,15 @@ export class OpenClawClient {
     // Exponential backoff: 1s, 2s, 4s, 8s... capped at 30s, with ±25% jitter
     const base = Math.min(1000 * Math.pow(2, this.reconnectAttempts - 1), 30000)
     const jitter = base * 0.25 * (Math.random() * 2 - 1) // ±25%
-    const delay = Math.round(base + jitter)
+    let delay = Math.round(base + jitter)
+    // Honor any one-shot server-supplied retry floor (e.g. from a v4
+    // UNAVAILABLE/startup-sidecars retryAfterMs hint). Cap at 30s so a
+    // misbehaving server can't push us into multi-minute waits.
+    if (this.nextReconnectDelayFloorMs !== null) {
+      const floor = Math.min(this.nextReconnectDelayFloorMs, 30000)
+      delay = Math.max(delay, floor)
+      this.nextReconnectDelayFloorMs = null
+    }
 
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null
@@ -593,13 +604,22 @@ export class OpenClawClient {
           const errorMsg = resFrame.error?.message || 'Handshake failed'
           const details = resFrame.error?.details
           // Retryable startup-sidecars error — server is still booting. The
-          // protocol spec asks clients to keep reconnecting within their
-          // budget instead of treating this as terminal auth failure.
+          // protocol spec (openclaw docs/gateway/protocol.md "Handshake")
+          // asks clients to keep reconnecting within their budget instead of
+          // treating this as terminal auth failure.
           if (
             errorCode === 'UNAVAILABLE' &&
             details && typeof details === 'object' && details.reason === 'startup-sidecars'
           ) {
-            const retryAfterMs = typeof details.retryAfterMs === 'number' ? details.retryAfterMs : undefined
+            const retryAfterMs =
+              typeof details.retryAfterMs === 'number' && details.retryAfterMs > 0
+                ? details.retryAfterMs
+                : undefined
+            // Honor the server-supplied retry hint as a one-shot floor on the
+            // next reconnect delay so we don't hammer the gateway during boot.
+            if (retryAfterMs !== undefined) {
+              this.nextReconnectDelayFloorMs = retryAfterMs
+            }
             this.emit('serverStarting', { retryAfterMs, message: errorMsg })
             // Leave suppressReconnect false so attemptReconnect() runs normally.
             reject?.(new Error('SERVER_STARTING'))
