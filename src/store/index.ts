@@ -343,6 +343,17 @@ let _lastChunkText = ''
 let _lastChunkTime = 0
 const CHUNK_DEDUP_WINDOW_MS = 80
 
+/** Prefix length used to detect late-arriving duplicates of a finalized message. */
+const GHOST_BUBBLE_PREFIX_LEN = 80
+
+const AUTH_ERROR_HINT_MAP: Record<string, string> = {
+  retry_with_device_token: 'Try reconnecting — the cached device token may resolve this.',
+  update_auth_configuration: 'Check the auth configuration on the OpenClaw server.',
+  update_auth_credentials: 'Update the gateway token or password in Settings.',
+  wait_then_retry: 'The server is still starting. Retry in a few seconds.',
+  review_auth_configuration: 'Review the OpenClaw auth configuration; the requested scope is not granted.',
+}
+
 // Monotonic counter for detecting stale async message loads after session switches.
 let _sessionLoadVersion = 0
 
@@ -2399,7 +2410,7 @@ export const useStore = create<AppState>()(
                 if (lastMessage && lastMessage.role === 'assistant' && !lastMessage.id.startsWith('streaming-')) {
                   const existing = lastMessage.content.trim()
                   const incoming = text.trim()
-                  if (existing && incoming && (existing.includes(incoming) || incoming.startsWith(existing.slice(0, 80)))) {
+                  if (existing && incoming && (existing.includes(incoming) || incoming.startsWith(existing.slice(0, GHOST_BUBBLE_PREFIX_LEN)))) {
                     return { ...perSession }
                   }
                 }
@@ -2481,7 +2492,7 @@ export const useStore = create<AppState>()(
               if (lastMessage && lastMessage.role === 'assistant' && !lastMessage.id.startsWith('streaming-')) {
                 const existing = lastMessage.content.trim()
                 const incoming = cleanText.trim()
-                if (existing && incoming && (existing.includes(incoming) || incoming.startsWith(existing.slice(0, 80)))) {
+                if (existing && incoming && (existing.includes(incoming) || incoming.startsWith(existing.slice(0, GHOST_BUBBLE_PREFIX_LEN)))) {
                   return { ...perSession }
                 }
               }
@@ -2493,7 +2504,21 @@ export const useStore = create<AppState>()(
                 content: cleanText,
                 timestamp: new Date().toISOString()
               }
-              return { messages: [...messages, newMessage], ...perSession }
+
+              // Re-anchor any orphaned (trailing) tool calls to this new message
+              // so they render above the text inside the same bubble, matching
+              // the streamChunk handler's behavior when it creates a placeholder.
+              const tcKey = resolvedKey || ''
+              const currentTCs = state.sessionToolCalls[tcKey]
+              let sessionToolCalls = state.sessionToolCalls
+              if (currentTCs?.some(tc => !tc.afterMessageId)) {
+                const updated = currentTCs.map(tc =>
+                  tc.afterMessageId ? tc : { ...tc, afterMessageId: newMessage.id }
+                )
+                sessionToolCalls = { ...state.sessionToolCalls, [tcKey]: updated }
+              }
+
+              return { messages: [...messages, newMessage], sessionToolCalls, ...perSession }
             })
           })
 
@@ -2505,14 +2530,11 @@ export const useStore = create<AppState>()(
               recommendedNextStep?: string
               message?: string
             }
-            const hintMap: Record<string, string> = {
-              retry_with_device_token: 'Try reconnecting — the cached device token may resolve this.',
-              update_auth_configuration: 'Check the auth configuration on the OpenClaw server.',
-              update_auth_credentials: 'Update the gateway token or password in Settings.',
-              wait_then_retry: 'The server is still starting. Retry in a few seconds.',
-              review_auth_configuration: 'Review the OpenClaw auth configuration; the requested scope is not granted.',
-            }
-            const hint = p.recommendedNextStep ? (hintMap[p.recommendedNextStep] || p.recommendedNextStep) : null
+            // connected: false / connecting: false are set by the connect() catch
+            // block; this handler only adds the v4 structured fields.
+            const hint = p.recommendedNextStep
+              ? (AUTH_ERROR_HINT_MAP[p.recommendedNextStep] || p.recommendedNextStep)
+              : null
             set({
               connectionError: p.message || 'Authentication failed',
               connectionErrorHint: hint,
