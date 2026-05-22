@@ -46,11 +46,11 @@ Five touched files in `src/lib/openclaw/`, three touched outside (store + settin
 
 **Connect frame**: bump `maxProtocol` from `3` to `4`. `minProtocol` stays `3` so v3 servers still accept us. The server picks the highest mutually supported version.
 
-**hello-ok branch** (`handleMessage`): capture two new fields from `resFrame.payload`:
-- `protocol` (number) → new private field `negotiatedProtocol`, default to `3` when missing so v4-only branches don't accidentally fire against v3 servers.
-- `pluginSurfaceUrls` (Record<string,string>) → new private field, default `{}`.
+**hello-ok branch** (`handleMessage`): capture two new fields from `resFrame.payload` onto the `OpenClawClient` instance:
+- `protocol` (number) → new public field `negotiatedProtocol`, default to `3` when missing so v4-only branches don't accidentally fire against v3 servers and so the UI can render "protocol v3" for older servers.
+- `pluginSurfaceUrls` (Record<string,string>) → new public field, default `{}`.
 
-Both fields are exposed through the existing `connected` event payload (which already passes the full `hello-ok`) plus two public getters: `getProtocolVersion(): number` and `getPluginSurfaceUrl(name: string): string | undefined`.
+Both fields are also exposed through the existing `connected` event payload (which already passes the full `hello-ok`), so the store can hydrate its own state from the event without reaching into the client instance.
 
 ### 2. Chat-delta v4 handler (`src/lib/openclaw/client.ts`)
 
@@ -91,7 +91,9 @@ In the hello-ok failure branch (`!resFrame.ok && !this.authenticated`), when `re
 
 Emit a new `authError` event with `{ code, reason, canRetryWithDeviceToken, recommendedNextStep, message }`. The existing `pairingRequired` and `deviceIdentityStale` paths fire first when matched, so this event is a catch-all for other auth failures.
 
-**Store**: extend the `connectionError` state with an optional `recommendedNextStep` field. The cert/auth error modal reads it and shows a one-line hint (e.g. "Try re-pairing this device" for `retry_with_device_token`).
+**Store**: add a new `connectionErrorHint: string | null` field next to the existing `connectionError`. The store maps `recommendedNextStep` codes to human-readable hints. The `SettingsModal` connection section already renders `connectionError` inline; the hint renders directly under it. `CertErrorModal` is unchanged — it only opens for TLS/cert failures.
+
+The client also handles retryable handshake responses: `error.code === 'UNAVAILABLE'` with `error.details.reason === 'startup-sidecars'` (server still booting) does NOT set `suppressReconnect`. Instead it emits a `serverStarting` event with `retryAfterMs` so the normal reconnect loop runs until the gateway is ready.
 
 ### 4. `models.list` view parameter (`src/lib/openclaw/client.ts`)
 
@@ -139,7 +141,7 @@ Store listener:
 - **Unknown / missing `protocol` in hello-ok**: default to `3`. v4-only branches gate on `negotiatedProtocol >= 4`, so they stay dormant.
 - **`deltaText` missing on a v3 server**: the v4 branch checks `typeof payload.deltaText === 'string'` and falls through to the existing v3 path.
 - **`replace=true` without prior text**: behaves identically to `replace=false` (sets `ss.text` to the new text, emits `streamReplace` which the store handles equivalently for an empty placeholder).
-- **`pluginSurfaceUrls` missing**: stored as empty object, no consumer yet so no UI impact.
+- **`pluginSurfaceUrls` missing**: stored as empty object. The existing canvas extraction falls back from the deprecated `canvasHostUrl` to `pluginSurfaceUrls.canvas` when present, so v4 servers that drop the legacy field still light up the canvas panel.
 - **`models.list` view ignored by v3 server**: server returns its default list, unchanged behavior.
 - **Auth error without `details`**: existing pairing/stale-identity detection still runs; `authError` event simply doesn't fire.
 
@@ -156,8 +158,9 @@ Manual verification matches the existing v3 protocol approach (no protocol-level
    - Existing chat streaming behavior unchanged.
 3. Trigger an auth failure (bad token, paired device removed):
    - `authError` event fires with `recommendedNextStep`.
-   - Cert/auth modal shows the recovery hint.
-4. `npm run typecheck` and `npm run build` pass.
+   - SettingsModal renders the recovery hint directly under the existing `connectionError` row.
+4. Connect to a v4 server while it is still finishing startup (`UNAVAILABLE` + `startup-sidecars`): client keeps reconnecting normally rather than treating the response as a terminal auth failure.
+5. `npm run typecheck` and `npm run build` pass.
 
 ## Open questions
 

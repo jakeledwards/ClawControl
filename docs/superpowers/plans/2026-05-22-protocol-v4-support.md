@@ -27,9 +27,9 @@
 - Modify: `src/lib/openclaw/client.ts:456-481` (connect frame)
 - Modify: `src/lib/openclaw/client.ts:544-561` (hello-ok handler)
 
-- [ ] **Step 1: Add private fields for negotiated protocol and plugin surface URLs**
+- [ ] **Step 1: Add public fields for negotiated protocol and plugin surface URLs**
 
-In `src/lib/openclaw/client.ts`, locate the `OpenClawClient` class field declarations near `public serverVersion: string | null = null` (around line 72) and add two new fields directly after `serverVersion`:
+In `src/lib/openclaw/client.ts`, locate the `OpenClawClient` class field declarations near `public serverVersion: string | null = null` (around line 72) and add two new public fields directly after `serverVersion`:
 
 ```typescript
   /** Negotiated protocol version from hello-ok (3 = legacy, 4 = current). Defaults to 3 when missing. */
@@ -214,9 +214,10 @@ Replace the entire `if (payload.state === 'delta') { ... return }` block with th
               return
             }
 
-            // Append true delta. Reuse applyStreamText by passing previous + delta
-            // so the single-stream-key guard and emit semantics stay identical.
-            const nextText = ss.text + text
+            // Append true delta. Route through mergeIncoming('delta') so the
+            // existing dedup, suffix-overlap, and runaway-text protections
+            // also cover v4 deltas if the server replays or overlaps frames.
+            const nextText = this.mergeIncoming(ss, text, 'delta')
             this.applyStreamText(ss, nextText, sk)
             return
           }
@@ -320,13 +321,27 @@ Insert a new block that extracts `error.details` (v4 contract) and emits an `aut
 
 ```typescript
         } else if (!resFrame.ok && !this.authenticated) {
-          // Failed connect response — don't reconnect with same bad credentials
-          this.suppressReconnect = true
           const errorCode = resFrame.error?.code
           const errorMsg = resFrame.error?.message || 'Handshake failed'
+          const details = resFrame.error?.details
+          // Retryable startup-sidecars error — server is still booting. The
+          // protocol spec asks clients to keep reconnecting within their
+          // budget instead of treating this as terminal auth failure.
+          if (
+            errorCode === 'UNAVAILABLE' &&
+            details && typeof details === 'object' && details.reason === 'startup-sidecars'
+          ) {
+            const retryAfterMs = typeof details.retryAfterMs === 'number' ? details.retryAfterMs : undefined
+            this.emit('serverStarting', { retryAfterMs, message: errorMsg })
+            // Leave suppressReconnect false so attemptReconnect() runs normally.
+            reject?.(new Error('SERVER_STARTING'))
+            return
+          }
+          // Failed connect response — don't reconnect with same bad credentials
+          this.suppressReconnect = true
           if (errorCode === 'NOT_PAIRED') {
             this.emit('pairingRequired', {
-              requestId: resFrame.error?.details?.requestId,
+              requestId: details?.requestId,
               deviceId: this.deviceIdentity?.id
             })
             reject?.(new Error('NOT_PAIRED'))
@@ -341,7 +356,6 @@ Insert a new block that extracts `error.details` (v4 contract) and emits an `aut
             return
           }
           // v4 auth error details (error.details.{code,reason,canRetryWithDeviceToken,recommendedNextStep})
-          const details = resFrame.error?.details
           if (details && typeof details === 'object') {
             this.emit('authError', {
               code: typeof details.code === 'string' ? details.code : errorCode,
@@ -354,6 +368,8 @@ Insert a new block that extracts `error.details` (v4 contract) and emits an `aut
           reject?.(new Error(errorMsg))
         }
 ```
+
+Note: the `pairingRequired` block now reads `details?.requestId` instead of `resFrame.error?.details?.requestId` because `details` is captured up front.
 
 - [ ] **Step 3: Typecheck**
 
@@ -562,23 +578,36 @@ Find the `client.on('connected', ...)` handler at `src/store/index.ts:2167`. Ins
               pairingRequestId: null
             })
 
-            // Extract and store device token from hello-ok response
-            if (serverHost && payload && typeof payload === 'object') {
+            // Parse hello-ok payload for connection-wide fields.
+            if (payload && typeof payload === 'object') {
               const helloOk = payload as Record<string, any>
-              const deviceToken = helloOk.auth?.deviceToken
-              if (typeof deviceToken === 'string' && deviceToken) {
-                saveDeviceToken(serverHost, deviceToken).catch(() => { })
+
+              // Device token (requires a parsed serverHost to persist).
+              if (serverHost) {
+                const deviceToken = helloOk.auth?.deviceToken
+                if (typeof deviceToken === 'string' && deviceToken) {
+                  saveDeviceToken(serverHost, deviceToken).catch(() => { })
+                }
               }
 
-              // Extract canvas host URL for canvas panel
-              const canvasHostUrl = helloOk.canvasHostUrl
-              if (typeof canvasHostUrl === 'string' && canvasHostUrl) {
+              // Canvas host URL: prefer the deprecated canvasHostUrl when present
+              // (v3), fall back to v4 pluginSurfaceUrls.canvas so v4 servers
+              // that dropped the deprecated field still light up the canvas panel.
+              const canvasHostUrl =
+                (typeof helloOk.canvasHostUrl === 'string' && helloOk.canvasHostUrl) ||
+                (helloOk.pluginSurfaceUrls && typeof helloOk.pluginSurfaceUrls.canvas === 'string'
+                  ? helloOk.pluginSurfaceUrls.canvas
+                  : '')
+              if (canvasHostUrl) {
                 const canvasScopedUrl = canvasHostUrl.replace(/\/?$/, '') + '/__openclaw__/canvas/'
                 set({ canvasHostUrl, canvasScopedUrl })
               }
 
-              // Capture negotiated protocol version + gateway server version (v4 adds protocol field)
-              const protocol = typeof helloOk.protocol === 'number' ? helloOk.protocol : null
+              // Capture negotiated protocol version (default 3 when absent — v3
+              // servers omit this field) + gateway server version. Always run
+              // regardless of serverHost so the version display populates even
+              // if the URL parse failed earlier.
+              const protocol = typeof helloOk.protocol === 'number' ? helloOk.protocol : 3
               const serverVersion =
                 (typeof helloOk.runtimeVersion === 'string' && helloOk.runtimeVersion) ||
                 (typeof helloOk.version === 'string' && helloOk.version) ||
@@ -637,6 +666,18 @@ Locate the `client.on('streamChunk', ...)` handler at `src/store/index.ts:2286`.
                 // Replace the current streaming placeholder content authoritatively.
                 messages[messages.length - 1] = { ...lastMessage, content: cleanText }
                 return { messages, ...perSession }
+              }
+
+              // Ghost-bubble guard: if the last message is a finalized assistant
+              // message that already contains (or starts with) the incoming
+              // replacement, this is a late-arriving event from a secondary
+              // event source. Suppress it to avoid creating an extra bubble.
+              if (lastMessage && lastMessage.role === 'assistant' && !lastMessage.id.startsWith('streaming-')) {
+                const existing = lastMessage.content.trim()
+                const incoming = cleanText.trim()
+                if (existing && incoming && (existing.includes(incoming) || incoming.startsWith(existing.slice(0, 80)))) {
+                  return { ...perSession }
+                }
               }
 
               // No active placeholder — create one with the replacement text.
@@ -835,45 +876,46 @@ EOF
 
 ---
 
-## Task 8: CertErrorModal — show auth recovery hint
+## Task 8: SettingsModal — show auth recovery hint next to connectionError
 
 **Files:**
-- Modify: `src/components/CertErrorModal.tsx`
+- Modify: `src/components/SettingsModal.tsx:10-44` (already destructures `connectionError` from Task 7; add `connectionErrorHint`)
+- Modify: `src/components/SettingsModal.tsx:523-524` (the `connectionError` display row)
 
-- [ ] **Step 1: Add connectionErrorHint to the store destructure**
+The CertErrorModal only opens on the `certError` event; auth failures surface via `connectionError`, which is rendered inline in the SettingsModal connection section. The recovery hint belongs there.
 
-Replace the destructure at `src/components/CertErrorModal.tsx:6`:
+- [ ] **Step 1: Add connectionErrorHint to the SettingsModal destructure**
+
+In `src/components/SettingsModal.tsx`, locate the `useStore()` destructure (already updated in Task 7 to include `protocolVersion` and `gatewayServerVersion`). Add `connectionErrorHint` to that list. The trailing portion of the destructure should read:
 
 ```typescript
-  const { showCertError, certErrorUrl, hideCertErrorModal, connect, connected, connectionErrorHint } = useStore()
+    protocolVersion,
+    gatewayServerVersion,
+    connectionErrorHint
+  } = useStore()
 ```
 
-- [ ] **Step 2: Render the hint in the modal body**
+- [ ] **Step 2: Render the hint directly under the connectionError row**
 
-Locate the `<div className="modal-body">` block at `src/components/CertErrorModal.tsx:64-78`. Replace it with the version that conditionally renders the recovery hint:
+Find the existing `connectionError` display at `src/components/SettingsModal.tsx:523-524`:
 
 ```typescript
-        <div className="modal-body">
-          <div className="cert-error-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-            </svg>
-          </div>
+              {!error && !connected && connectionError && (
+                <div className="form-error">{connectionError}{connectionError.toLowerCase().includes('origin not allowed') && originHelpBlock}</div>
+              )}
+```
 
-          <p className="cert-error-message">
-            {description}
-          </p>
+Replace it with the version that renders the hint immediately after the error message:
 
-          <div className="cert-error-url">
-            <code>{certErrorUrl}</code>
-          </div>
-
-          {connectionErrorHint && (
-            <p className="form-hint" style={{ marginTop: '12px' }}>
-              {connectionErrorHint}
-            </p>
-          )}
-        </div>
+```typescript
+              {!error && !connected && connectionError && (
+                <>
+                  <div className="form-error">{connectionError}{connectionError.toLowerCase().includes('origin not allowed') && originHelpBlock}</div>
+                  {connectionErrorHint && (
+                    <div className="form-hint" style={{ marginTop: '4px' }}>{connectionErrorHint}</div>
+                  )}
+                </>
+              )}
 ```
 
 - [ ] **Step 3: Typecheck + lint**
@@ -887,13 +929,15 @@ Expected: no new errors.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add src/components/CertErrorModal.tsx
+git add src/components/SettingsModal.tsx
 git commit -m "$(cat <<'EOF'
-Surface v4 auth-error recovery hint in CertErrorModal
+Surface v4 auth-error recovery hint in SettingsModal
 
 When the store carries a connectionErrorHint (mapped from a v4
-recommendedNextStep), render it under the cert URL so the user sees
-the recommended next action instead of just a generic error.
+recommendedNextStep), render it directly under the existing
+connectionError row in the SettingsModal connection section, so users
+see the recommended next action alongside the failure message. The
+CertErrorModal is unchanged — it only opens for TLS/cert failures.
 
 Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
 EOF
@@ -961,10 +1005,11 @@ Bring up a v3 (e.g. v2026.3.x) gateway and reconnect ClawControl to it.
 
 - [ ] **Step 7: Manual smoke test for auth error hint**
 
-Disconnect, set an invalid gateway token, and reconnect.
-1. Cert/auth error modal opens.
-2. If the server returned `error.details.recommendedNextStep`, the modal body shows the mapped hint (e.g., "Update the gateway token or password in Settings.").
-3. With a v3 server (no details), the modal renders as before with no extra hint.
+Disconnect, set an invalid gateway token, and reconnect from the Settings modal.
+1. The Settings modal stays open and the connection-section error row shows the auth failure message.
+2. If the server returned `error.details.recommendedNextStep`, a hint row appears directly under the error (e.g., "Update the gateway token or password in Settings.").
+3. With a v3 server (no `error.details`), the error renders as before with no extra hint row.
+4. With a v4 server still booting (returns `UNAVAILABLE` + `details.reason: "startup-sidecars"`), ClawControl keeps reconnecting instead of treating it as terminal. The connection error briefly shows but resolves once the server is ready.
 
 - [ ] **Step 8: Final commit if any cleanup edits were needed during smoke testing**
 
@@ -984,10 +1029,10 @@ git status
 
 **Spec coverage:**
 - ✅ Goal 1: Negotiate v4 → Task 1
-- ✅ Goal 2: Preserve v3 fallback → Task 1 (minProtocol stays 3) + Task 2 (v3 branch retained)
-- ✅ Goal 3: Handle v4 chat deltaText/replace → Task 2 + Task 6 (store streamReplace)
-- ✅ Goal 4: Surface v4 auth-error details → Task 3 + Task 6 (store authError) + Task 8 (UI hint)
-- ✅ Goal 5: Capture pluginSurfaceUrls → Task 1
+- ✅ Goal 2: Preserve v3 fallback → Task 1 (minProtocol stays 3) + Task 2 (v3 branch retained) + Task 6 (protocolVersion defaults to 3 when hello-ok omits it)
+- ✅ Goal 3: Handle v4 chat deltaText/replace → Task 2 (client routes deltas through mergeIncoming('delta')) + Task 6 (store streamReplace with finalized-message guard)
+- ✅ Goal 4: Surface v4 auth-error details → Task 3 (client emits authError, also handles retryable UNAVAILABLE+startup-sidecars) + Task 6 (store authError handler) + Task 8 (SettingsModal hint next to connectionError, NOT CertErrorModal)
+- ✅ Goal 5: Capture pluginSurfaceUrls → Task 1 (capture) + Task 6 (canvas fallback to pluginSurfaceUrls.canvas so v4-only servers still light up the canvas panel)
 - ✅ Goal 6: models.list view → Task 4
 - ✅ Goal 7: Display negotiated protocol version → Task 5 (store) + Task 7 (UI)
 
