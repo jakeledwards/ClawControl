@@ -70,6 +70,10 @@ export class OpenClawClient {
   private tickIntervalMs = 30000
   /** Server runtime version from hello-ok payload (v2026.3.11). */
   public serverVersion: string | null = null
+  /** Negotiated protocol version from hello-ok (3 = legacy, 4 = current). Defaults to 3 when missing. */
+  public negotiatedProtocol: number = 3
+  /** Plugin surface URLs map from hello-ok (e.g. { canvas: "https://..." }). */
+  public pluginSurfaceUrls: Record<string, string> = {}
   /** Watchdog timer that detects missed server ticks (dead connection). */
   private tickWatchTimer: ReturnType<typeof setTimeout> | null = null
   /** Timestamp of the last received server tick event. */
@@ -459,7 +463,7 @@ export class OpenClawClient {
       method: 'connect',
       params: {
         minProtocol: 3,
-        maxProtocol: 3,
+        maxProtocol: 4,
         role: 'operator',
         scopes,
         client: {
@@ -552,6 +556,20 @@ export class OpenClawClient {
           const version = resFrame.payload?.runtimeVersion || resFrame.payload?.version
           if (typeof version === 'string') {
             this.serverVersion = version
+          }
+          // Capture negotiated protocol version (v2026.5.x added v4)
+          const protocol = resFrame.payload?.protocol
+          if (typeof protocol === 'number' && protocol >= 3) {
+            this.negotiatedProtocol = protocol
+          }
+          // Capture plugin surface URLs (v4 pluginSurfaceUrls; v3 ignored)
+          const surfaces = resFrame.payload?.pluginSurfaceUrls
+          if (surfaces && typeof surfaces === 'object' && !Array.isArray(surfaces)) {
+            const collected: Record<string, string> = {}
+            for (const [k, v] of Object.entries(surfaces)) {
+              if (typeof v === 'string' && v) collected[k] = v
+            }
+            this.pluginSurfaceUrls = collected
           }
           this.startHealthCheck()
           this.resetTickWatch() // Start watching for server ticks
