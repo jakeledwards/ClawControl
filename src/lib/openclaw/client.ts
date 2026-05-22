@@ -1405,9 +1405,10 @@ export class OpenClawClient {
   }
 
   // Models
-  async listModels(): Promise<Array<{ id: string; name?: string; provider?: string }>> {
+  async listModels(view?: 'default' | 'configured' | 'all'): Promise<Array<{ id: string; name?: string; provider?: string }>> {
     try {
-      const result = await this._call<any>('models.list', {})
+      const params = view ? { view } : {}
+      const result = await this._call<any>('models.list', params)
       const models = result?.models
       if (!Array.isArray(models)) return []
       return models.map((m: any) => ({
