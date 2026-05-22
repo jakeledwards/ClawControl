@@ -840,6 +840,45 @@ export class OpenClawClient {
         const ss = this.getStream(sk)
 
         if (payload.state === 'delta') {
+          // v4 path: payload.deltaText is a true delta with optional replace flag.
+          if (typeof payload.deltaText === 'string') {
+            this.ensureStream(ss, 'chat', 'delta', payload.runId, sk)
+            if (ss.source !== 'chat') return
+
+            let text = stripSystemNotifications(stripAnsi(payload.deltaText))
+            // Strip MEDIA: lines / trailing partial MEDIA tokens, same as v3 path.
+            if (text.includes('MEDIA')) {
+              text = text
+                .split('\n')
+                .filter(l => !/\bMEDIA:\s*/i.test(l))
+                .join('\n')
+                .replace(/\s*\bMEDIA\s*$/, '')
+            }
+            if (!text || isNoiseContent(text) || isHeartbeatContent(text)) return
+
+            if (payload.replace === true) {
+              // Authoritative replacement — overwrite accumulated text and tell the store.
+              ss.text = text
+              ss.blockOffset = 0
+              // Honor the single-stream-key guard used by applyStreamText.
+              if (this.activeStreamKey === null) {
+                this.activeStreamKey = sk
+              }
+              if (this.activeStreamKey === sk) {
+                this.emit('streamReplace', { text, sessionKey: sk })
+              }
+              return
+            }
+
+            // Append true delta. Route through mergeIncoming('delta') so the
+            // existing dedup, suffix-overlap, and runaway-text protections
+            // also cover v4 deltas if the server replays or overlaps frames.
+            const nextText = this.mergeIncoming(ss, text, 'delta')
+            this.applyStreamText(ss, nextText, sk)
+            return
+          }
+
+          // v3 path (cumulative payload.delta / payload.message.content) — unchanged.
           this.ensureStream(ss, 'chat', 'cumulative', payload.runId, sk)
           if (ss.source !== 'chat') return // Another stream type already claimed this session
 
