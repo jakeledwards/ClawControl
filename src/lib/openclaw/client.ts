@@ -210,6 +210,8 @@ export class OpenClawClient {
 
         this.ws.onclose = () => {
           this.authenticated = false
+          this.negotiatedProtocol = 3
+          this.pluginSurfaceUrls = {}
           this.stopHealthCheck()
           this.stopTickWatch()
           // Emit synthetic streamEnd for any active streams so UI doesn't stay stuck
@@ -562,7 +564,7 @@ export class OpenClawClient {
           if (typeof protocol === 'number' && protocol >= 3) {
             this.negotiatedProtocol = protocol
           }
-          // Capture plugin surface URLs (v4 pluginSurfaceUrls; v3 ignored)
+          // Capture plugin surface URLs (v4 servers populate this; v3 servers omit it)
           const surfaces = resFrame.payload?.pluginSurfaceUrls
           if (surfaces && typeof surfaces === 'object' && !Array.isArray(surfaces)) {
             const collected: Record<string, string> = {}
