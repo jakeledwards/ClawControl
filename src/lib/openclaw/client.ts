@@ -589,13 +589,27 @@ export class OpenClawClient {
             pending.reject(new Error(errorMsg))
           }
         } else if (!resFrame.ok && !this.authenticated) {
-          // Failed connect response — don't reconnect with same bad credentials
-          this.suppressReconnect = true
           const errorCode = resFrame.error?.code
           const errorMsg = resFrame.error?.message || 'Handshake failed'
+          const details = resFrame.error?.details
+          // Retryable startup-sidecars error — server is still booting. The
+          // protocol spec asks clients to keep reconnecting within their
+          // budget instead of treating this as terminal auth failure.
+          if (
+            errorCode === 'UNAVAILABLE' &&
+            details && typeof details === 'object' && details.reason === 'startup-sidecars'
+          ) {
+            const retryAfterMs = typeof details.retryAfterMs === 'number' ? details.retryAfterMs : undefined
+            this.emit('serverStarting', { retryAfterMs, message: errorMsg })
+            // Leave suppressReconnect false so attemptReconnect() runs normally.
+            reject?.(new Error('SERVER_STARTING'))
+            return
+          }
+          // Failed connect response — don't reconnect with same bad credentials
+          this.suppressReconnect = true
           if (errorCode === 'NOT_PAIRED') {
             this.emit('pairingRequired', {
-              requestId: resFrame.error?.details?.requestId,
+              requestId: details?.requestId,
               deviceId: this.deviceIdentity?.id
             })
             reject?.(new Error('NOT_PAIRED'))
@@ -608,6 +622,16 @@ export class OpenClawClient {
             this.emit('deviceIdentityStale')
             reject?.(new Error('DEVICE_IDENTITY_STALE'))
             return
+          }
+          // v4 auth error details (error.details.{code,reason,canRetryWithDeviceToken,recommendedNextStep})
+          if (details && typeof details === 'object') {
+            this.emit('authError', {
+              code: typeof details.code === 'string' ? details.code : errorCode,
+              reason: typeof details.reason === 'string' ? details.reason : undefined,
+              canRetryWithDeviceToken: details.canRetryWithDeviceToken === true,
+              recommendedNextStep: typeof details.recommendedNextStep === 'string' ? details.recommendedNextStep : undefined,
+              message: errorMsg
+            })
           }
           reject?.(new Error(errorMsg))
         }
