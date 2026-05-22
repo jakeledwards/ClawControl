@@ -2183,22 +2183,51 @@ export const useStore = create<AppState>()(
               disconnectGraceTimer = null
             }
 
-            set({ connected: true, connecting: false, connectionError: null, pairingStatus: 'none', pairingRequestId: null })
+            set({
+              connected: true,
+              connecting: false,
+              connectionError: null,
+              connectionErrorHint: null,
+              pairingStatus: 'none',
+              pairingRequestId: null
+            })
 
-            // Extract and store device token from hello-ok response
-            if (serverHost && payload && typeof payload === 'object') {
+            // Parse hello-ok payload for connection-wide fields.
+            if (payload && typeof payload === 'object') {
               const helloOk = payload as Record<string, any>
-              const deviceToken = helloOk.auth?.deviceToken
-              if (typeof deviceToken === 'string' && deviceToken) {
-                saveDeviceToken(serverHost, deviceToken).catch(() => { })
+
+              // Device token (requires a parsed serverHost to persist).
+              if (serverHost) {
+                const deviceToken = helloOk.auth?.deviceToken
+                if (typeof deviceToken === 'string' && deviceToken) {
+                  saveDeviceToken(serverHost, deviceToken).catch(() => { })
+                }
               }
 
-              // Extract canvas host URL for canvas panel
-              const canvasHostUrl = helloOk.canvasHostUrl
-              if (typeof canvasHostUrl === 'string' && canvasHostUrl) {
+              // Canvas host URL: prefer the deprecated canvasHostUrl when present
+              // (v3), fall back to v4 pluginSurfaceUrls.canvas so v4 servers
+              // that dropped the deprecated field still light up the canvas panel.
+              const canvasHostUrl =
+                (typeof helloOk.canvasHostUrl === 'string' && helloOk.canvasHostUrl) ||
+                (helloOk.pluginSurfaceUrls && typeof helloOk.pluginSurfaceUrls.canvas === 'string'
+                  ? helloOk.pluginSurfaceUrls.canvas
+                  : '')
+              if (canvasHostUrl) {
                 const canvasScopedUrl = canvasHostUrl.replace(/\/?$/, '') + '/__openclaw__/canvas/'
                 set({ canvasHostUrl, canvasScopedUrl })
               }
+
+              // Capture negotiated protocol version (default 3 when absent — v3
+              // servers omit this field) + gateway server version. Always run
+              // regardless of serverHost so the version display populates even
+              // if the URL parse failed earlier.
+              const protocol = typeof helloOk.protocol === 'number' ? helloOk.protocol : 3
+              const serverVersion =
+                (typeof helloOk.runtimeVersion === 'string' && helloOk.runtimeVersion) ||
+                (typeof helloOk.version === 'string' && helloOk.version) ||
+                (typeof helloOk.server === 'object' && helloOk.server && typeof helloOk.server.version === 'string' ? helloOk.server.version : null) ||
+                null
+              set({ protocolVersion: protocol, gatewayServerVersion: serverVersion })
             }
 
             // Flush any messages queued during transient disconnect.
@@ -2398,6 +2427,95 @@ export const useStore = create<AppState>()(
 
                 return { messages: [...messages, newMessage], sessionToolCalls, ...perSession }
               }
+            })
+          })
+
+          client.on('streamReplace', (payload: unknown) => {
+            const { text, sessionKey } = (payload || {}) as { text?: string; sessionKey?: string }
+            if (typeof text !== 'string') return
+
+            const { currentSessionId, streamingDisabled } = get()
+            const resolvedKey = sessionKey || currentSessionId
+            if (resolvedKey) clearResponseWatchdog(resolvedKey)
+            const isCurrentSession = !sessionKey || !currentSessionId || sessionKey === currentSessionId
+
+            if (!isCurrentSession) {
+              if (resolvedKey) {
+                set((state) => ({
+                  streamingSessions: { ...state.streamingSessions, [resolvedKey]: true },
+                  sessionHadChunks: { ...state.sessionHadChunks, [resolvedKey]: true },
+                }))
+              }
+              return
+            }
+
+            if (streamingDisabled) {
+              if (resolvedKey) {
+                set((state) => ({
+                  streamingSessions: { ...state.streamingSessions, [resolvedKey]: true },
+                }))
+              }
+              return
+            }
+
+            set((state) => {
+              const perSession = resolvedKey ? {
+                streamingSessions: { ...state.streamingSessions, [resolvedKey]: true },
+                sessionHadChunks: { ...state.sessionHadChunks, [resolvedKey]: true },
+              } : {}
+
+              const messages = [...state.messages]
+              const lastMessage = messages[messages.length - 1]
+              const { text: cleanText } = stripBase64FromStreaming(text)
+
+              if (lastMessage && lastMessage.role === 'assistant' && lastMessage.id.startsWith('streaming-')) {
+                // Replace the current streaming placeholder content authoritatively.
+                messages[messages.length - 1] = { ...lastMessage, content: cleanText }
+                return { messages, ...perSession }
+              }
+
+              // Ghost-bubble guard: if the last message is a finalized assistant
+              // message that already contains (or starts with) the incoming
+              // replacement, this is a late-arriving event from a secondary
+              // event source. Suppress it to avoid creating an extra bubble.
+              if (lastMessage && lastMessage.role === 'assistant' && !lastMessage.id.startsWith('streaming-')) {
+                const existing = lastMessage.content.trim()
+                const incoming = cleanText.trim()
+                if (existing && incoming && (existing.includes(incoming) || incoming.startsWith(existing.slice(0, 80)))) {
+                  return { ...perSession }
+                }
+              }
+
+              // No active placeholder — create one with the replacement text.
+              const newMessage: Message = {
+                id: `streaming-${Date.now()}`,
+                role: 'assistant',
+                content: cleanText,
+                timestamp: new Date().toISOString()
+              }
+              return { messages: [...messages, newMessage], ...perSession }
+            })
+          })
+
+          client.on('authError', (payload: unknown) => {
+            const p = (payload || {}) as {
+              code?: string
+              reason?: string
+              canRetryWithDeviceToken?: boolean
+              recommendedNextStep?: string
+              message?: string
+            }
+            const hintMap: Record<string, string> = {
+              retry_with_device_token: 'Try reconnecting — the cached device token may resolve this.',
+              update_auth_configuration: 'Check the auth configuration on the OpenClaw server.',
+              update_auth_credentials: 'Update the gateway token or password in Settings.',
+              wait_then_retry: 'The server is still starting. Retry in a few seconds.',
+              review_auth_configuration: 'Review the OpenClaw auth configuration; the requested scope is not granted.',
+            }
+            const hint = p.recommendedNextStep ? (hintMap[p.recommendedNextStep] || p.recommendedNextStep) : null
+            set({
+              connectionError: p.message || 'Authentication failed',
+              connectionErrorHint: hint,
             })
           })
 
