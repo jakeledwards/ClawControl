@@ -843,10 +843,11 @@ export class OpenClawClient {
           // v4 path: payload.deltaText is a true delta with optional replace flag.
           if (typeof payload.deltaText === 'string') {
             this.ensureStream(ss, 'chat', 'delta', payload.runId, sk)
-            if (ss.source !== 'chat') return
+            if (ss.finalized || !ss.started || ss.source !== 'chat') return
 
             let text = stripSystemNotifications(stripAnsi(payload.deltaText))
-            // Strip MEDIA: lines / trailing partial MEDIA tokens, same as v3 path.
+            // Strip MEDIA: lines / trailing partial MEDIA tokens. No final trim
+            // because trimming mid-stream deltas would corrupt word boundaries.
             if (text.includes('MEDIA')) {
               text = text
                 .split('\n')
