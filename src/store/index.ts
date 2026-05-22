@@ -3045,7 +3045,15 @@ export const useStore = create<AppState>()(
             return get().connect()
           }
 
-          const connectionError = err instanceof Error ? err.message : 'Connection failed'
+          // SERVER_STARTING is a sentinel for a retryable v4 UNAVAILABLE+startup-sidecars
+          // response. The client is already running its own reconnect loop with the
+          // server-supplied retryAfterMs as a floor; surfacing the sentinel string as a
+          // user-visible error would confuse users during a transparent retry.
+          if (errMsg === 'SERVER_STARTING') {
+            set({ connecting: false })
+            return
+          }
+          const connectionError = errMsg || 'Connection failed'
           set({ connecting: false, connected: false, connectionError })
           throw err
         }
