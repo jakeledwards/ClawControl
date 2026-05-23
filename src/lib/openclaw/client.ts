@@ -621,7 +621,12 @@ export class OpenClawClient {
               this.nextReconnectDelayFloorMs = retryAfterMs
             }
             this.emit('serverStarting', { retryAfterMs, message: errorMsg })
-            // Leave suppressReconnect false so attemptReconnect() runs normally.
+            // Force-close the socket so onclose fires and attemptReconnect()
+            // runs even if the gateway keeps the WS open after returning
+            // UNAVAILABLE. Without this the client could stall indefinitely
+            // waiting for a close that never arrives. suppressReconnect stays
+            // false so the reconnect loop honors nextReconnectDelayFloorMs.
+            try { this.ws?.close() } catch { /* already closing */ }
             reject?.(new Error('SERVER_STARTING'))
             return
           }
@@ -899,7 +904,11 @@ export class OpenClawClient {
                 .join('\n')
                 .replace(/\s*\bMEDIA\s*$/, '')
             }
-            if (!text || isNoiseContent(text) || isHeartbeatContent(text)) return
+            // Filter noise/heartbeat for the append path. The replace path
+            // intentionally skips this filter so that an authoritative empty
+            // replacement (deltaText: '' with replace=true) can clear the
+            // streaming placeholder rather than being silently dropped.
+            if (payload.replace !== true && (!text || isNoiseContent(text) || isHeartbeatContent(text))) return
 
             if (payload.replace === true) {
               // Authoritative replacement — overwrite accumulated text and tell the store.

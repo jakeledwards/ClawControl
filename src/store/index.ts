@@ -1977,7 +1977,11 @@ export const useStore = create<AppState>()(
         }
 
         const thisGeneration = ++_connectGeneration
-        set({ connecting: true, pairingStatus: 'none', pairingRequestId: null })
+        // Clear any stale v4 auth-error hint from a prior attempt so an
+        // unrelated later error doesn't surface a misleading hint. The
+        // authError handler will re-populate it during this attempt if the
+        // same failure recurs through the structured v4 path.
+        set({ connecting: true, pairingStatus: 'none', pairingRequestId: null, connectionErrorHint: null })
 
         // Hoisted so catch block can access for device token retry logic
         let serverHost: string | null = null
@@ -3054,6 +3058,10 @@ export const useStore = create<AppState>()(
             return
           }
           const connectionError = errMsg || 'Connection failed'
+          // Don't clear connectionErrorHint here — the authError listener
+          // fires BEFORE this catch runs and may have already populated a
+          // structured v4 recovery hint. We cleared any stale hint at the
+          // start of connect() so a fresh attempt starts clean.
           set({ connecting: false, connected: false, connectionError })
           throw err
         }
