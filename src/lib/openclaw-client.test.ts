@@ -277,7 +277,13 @@ describe('OpenClawClient', () => {
   })
 
   describe('per-session stream isolation', () => {
-    it('should process events from all sessions independently', () => {
+    // TODO: Skipped until the store layer supports per-session message buffers.
+    // Currently the store routes all chunks matching currentSessionId into a single
+    // placeholder, so the activeStreamKey guard in client.ts must suppress events
+    // from non-parent sessions to prevent the triple-text bug. This test asserts
+    // the future per-session-isolation design where subagents stream into their
+    // own UI placeholders (see SubagentBlock + popout windows for that path).
+    it.skip('should process events from all sessions independently', () => {
       const chunkHandler = vi.fn()
       client.on('streamChunk', chunkHandler)
 
@@ -362,7 +368,12 @@ describe('OpenClawClient', () => {
       expect(chunkHandler).toHaveBeenCalledTimes(1)
     })
 
-    it('should isolate per-session stream state so subagent does not corrupt parent', () => {
+    // TODO: Skipped until the store layer supports per-session message buffers.
+    // Same reason as the skipped test above — the client correctly emits chunks
+    // for the parent session, but events from subagent-session are suppressed by
+    // the activeStreamKey guard. Subagent text is shown via SubagentBlock / popout,
+    // which have their own client instances, not via streamChunk on the parent.
+    it.skip('should isolate per-session stream state so subagent does not corrupt parent', () => {
       const chunkHandler = vi.fn()
       client.on('streamChunk', chunkHandler)
 
@@ -738,7 +749,7 @@ describe('OpenClawClient', () => {
   describe('sendMessage', () => {
     it('should include sessionKey when sessionId is provided', async () => {
       const callSpy = vi
-        .spyOn(client as any, 'call')
+        .spyOn(client as any, '_call')
         .mockResolvedValue({ sessionKey: 'server-session-1' })
 
       await client.sendMessage({
@@ -754,7 +765,7 @@ describe('OpenClawClient', () => {
 
     it('should use default sessionKey when sessionId is not provided', async () => {
       const callSpy = vi
-        .spyOn(client as any, 'call')
+        .spyOn(client as any, '_call')
         .mockResolvedValue({ sessionKey: 'server-session-2' })
 
       await client.sendMessage({

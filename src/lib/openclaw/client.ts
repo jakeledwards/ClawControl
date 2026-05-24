@@ -757,9 +757,11 @@ export class OpenClawClient {
     // of them would write to the main chat placeholder, causing triple text.
     if (this.activeStreamKey === null) {
       this.activeStreamKey = sessionKey
-    } else if (this.activeStreamKey !== sessionKey) {
+    } else if (this.activeStreamKey !== sessionKey && !this.parentSessionKeys.has(sessionKey)) {
       // Still accumulate text internally so state stays consistent,
       // but suppress the emission to prevent duplicate display.
+      // Known parent sessions are allowed to emit concurrently — each one is
+      // a legitimate stream that should reach its own UI placeholder.
       ss.text = nextText
       return
     }
@@ -918,7 +920,7 @@ export class OpenClawClient {
               if (this.activeStreamKey === null) {
                 this.activeStreamKey = sk
               }
-              if (this.activeStreamKey === sk) {
+              if (this.activeStreamKey === sk || this.parentSessionKeys.has(sk)) {
                 this.emit('streamReplace', { text, sessionKey: sk })
               }
               return
