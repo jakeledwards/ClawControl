@@ -138,6 +138,12 @@ interface AppState {
   connecting: boolean
   connectionError: string | null
   setConnectionError: (error: string | null) => void
+  /** Negotiated protocol version from hello-ok. Null when not yet connected. */
+  protocolVersion: number | null
+  /** Gateway server version from hello-ok (e.g. "2026.5.20"). Null when not yet connected. */
+  gatewayServerVersion: string | null
+  /** Recovery hint from v4 auth errors (e.g. "retry_with_device_token"). Null when no hint. */
+  connectionErrorHint: string | null
   client: OpenClawClient | null
   deviceName: string
   setDeviceName: (name: string) => void
@@ -336,6 +342,17 @@ let _baselineSessionKeys: Set<string> | null = null
 let _lastChunkText = ''
 let _lastChunkTime = 0
 const CHUNK_DEDUP_WINDOW_MS = 80
+
+/** Prefix length used to detect late-arriving duplicates of a finalized message. */
+const GHOST_BUBBLE_PREFIX_LEN = 80
+
+const AUTH_ERROR_HINT_MAP: Record<string, string> = {
+  retry_with_device_token: 'Try reconnecting — the cached device token may resolve this.',
+  update_auth_configuration: 'Check the auth configuration on the OpenClaw server.',
+  update_auth_credentials: 'Update the gateway token or password in Settings.',
+  wait_then_retry: 'The server is still starting. Retry in a few seconds.',
+  review_auth_configuration: 'Review the OpenClaw auth configuration; the requested scope is not granted.',
+}
 
 // Monotonic counter for detecting stale async message loads after session switches.
 let _sessionLoadVersion = 0
@@ -585,6 +602,9 @@ export const useStore = create<AppState>()(
           connected: false,
           connecting: false,
           connectionError: null,
+          protocolVersion: null,
+          gatewayServerVersion: null,
+          connectionErrorHint: null,
           sessions: [],
           messages: [],
           currentSessionId: null,
@@ -643,6 +663,9 @@ export const useStore = create<AppState>()(
       connecting: false,
       connectionError: null,
       setConnectionError: (error) => set({ connectionError: error }),
+      protocolVersion: null,
+      gatewayServerVersion: null,
+      connectionErrorHint: null,
       client: null,
       nodeEnabled: false,
       setNodeEnabled: (enabled) => {
@@ -1954,7 +1977,11 @@ export const useStore = create<AppState>()(
         }
 
         const thisGeneration = ++_connectGeneration
-        set({ connecting: true, pairingStatus: 'none', pairingRequestId: null })
+        // Clear any stale v4 auth-error hint from a prior attempt so an
+        // unrelated later error doesn't surface a misleading hint. The
+        // authError handler will re-populate it during this attempt if the
+        // same failure recurs through the structured v4 path.
+        set({ connecting: true, pairingStatus: 'none', pairingRequestId: null, connectionErrorHint: null })
 
         // Hoisted so catch block can access for device token retry logic
         let serverHost: string | null = null
@@ -2171,22 +2198,51 @@ export const useStore = create<AppState>()(
               disconnectGraceTimer = null
             }
 
-            set({ connected: true, connecting: false, connectionError: null, pairingStatus: 'none', pairingRequestId: null })
+            set({
+              connected: true,
+              connecting: false,
+              connectionError: null,
+              connectionErrorHint: null,
+              pairingStatus: 'none',
+              pairingRequestId: null
+            })
 
-            // Extract and store device token from hello-ok response
-            if (serverHost && payload && typeof payload === 'object') {
+            // Parse hello-ok payload for connection-wide fields.
+            if (payload && typeof payload === 'object') {
               const helloOk = payload as Record<string, any>
-              const deviceToken = helloOk.auth?.deviceToken
-              if (typeof deviceToken === 'string' && deviceToken) {
-                saveDeviceToken(serverHost, deviceToken).catch(() => { })
+
+              // Device token (requires a parsed serverHost to persist).
+              if (serverHost) {
+                const deviceToken = helloOk.auth?.deviceToken
+                if (typeof deviceToken === 'string' && deviceToken) {
+                  saveDeviceToken(serverHost, deviceToken).catch(() => { })
+                }
               }
 
-              // Extract canvas host URL for canvas panel
-              const canvasHostUrl = helloOk.canvasHostUrl
-              if (typeof canvasHostUrl === 'string' && canvasHostUrl) {
+              // Canvas host URL: prefer the deprecated canvasHostUrl when present
+              // (v3), fall back to v4 pluginSurfaceUrls.canvas so v4 servers
+              // that dropped the deprecated field still light up the canvas panel.
+              const canvasHostUrl =
+                (typeof helloOk.canvasHostUrl === 'string' && helloOk.canvasHostUrl) ||
+                (helloOk.pluginSurfaceUrls && typeof helloOk.pluginSurfaceUrls.canvas === 'string'
+                  ? helloOk.pluginSurfaceUrls.canvas
+                  : '')
+              if (canvasHostUrl) {
                 const canvasScopedUrl = canvasHostUrl.replace(/\/?$/, '') + '/__openclaw__/canvas/'
                 set({ canvasHostUrl, canvasScopedUrl })
               }
+
+              // Capture negotiated protocol version (default 3 when absent — v3
+              // servers omit this field) + gateway server version. Always run
+              // regardless of serverHost so the version display populates even
+              // if the URL parse failed earlier.
+              const protocol = typeof helloOk.protocol === 'number' ? helloOk.protocol : 3
+              const serverVersion =
+                (typeof helloOk.runtimeVersion === 'string' && helloOk.runtimeVersion) ||
+                (typeof helloOk.version === 'string' && helloOk.version) ||
+                (typeof helloOk.server === 'object' && helloOk.server && typeof helloOk.server.version === 'string' ? helloOk.server.version : null) ||
+                null
+              set({ protocolVersion: protocol, gatewayServerVersion: serverVersion })
             }
 
             // Flush any messages queued during transient disconnect.
@@ -2358,7 +2414,7 @@ export const useStore = create<AppState>()(
                 if (lastMessage && lastMessage.role === 'assistant' && !lastMessage.id.startsWith('streaming-')) {
                   const existing = lastMessage.content.trim()
                   const incoming = text.trim()
-                  if (existing && incoming && (existing.includes(incoming) || incoming.startsWith(existing.slice(0, 80)))) {
+                  if (existing && incoming && (existing.includes(incoming) || incoming.startsWith(existing.slice(0, GHOST_BUBBLE_PREFIX_LEN)))) {
                     return { ...perSession }
                   }
                 }
@@ -2386,6 +2442,106 @@ export const useStore = create<AppState>()(
 
                 return { messages: [...messages, newMessage], sessionToolCalls, ...perSession }
               }
+            })
+          })
+
+          client.on('streamReplace', (payload: unknown) => {
+            const { text, sessionKey } = (payload || {}) as { text?: string; sessionKey?: string }
+            if (typeof text !== 'string') return
+
+            const { currentSessionId, streamingDisabled } = get()
+            const resolvedKey = sessionKey || currentSessionId
+            if (resolvedKey) clearResponseWatchdog(resolvedKey)
+            const isCurrentSession = !sessionKey || !currentSessionId || sessionKey === currentSessionId
+
+            if (!isCurrentSession) {
+              if (resolvedKey) {
+                set((state) => ({
+                  streamingSessions: { ...state.streamingSessions, [resolvedKey]: true },
+                  sessionHadChunks: { ...state.sessionHadChunks, [resolvedKey]: true },
+                }))
+              }
+              return
+            }
+
+            if (streamingDisabled) {
+              if (resolvedKey) {
+                set((state) => ({
+                  streamingSessions: { ...state.streamingSessions, [resolvedKey]: true },
+                }))
+              }
+              return
+            }
+
+            set((state) => {
+              const perSession = resolvedKey ? {
+                streamingSessions: { ...state.streamingSessions, [resolvedKey]: true },
+                sessionHadChunks: { ...state.sessionHadChunks, [resolvedKey]: true },
+              } : {}
+
+              const messages = [...state.messages]
+              const lastMessage = messages[messages.length - 1]
+              const { text: cleanText } = stripBase64FromStreaming(text)
+
+              if (lastMessage && lastMessage.role === 'assistant' && lastMessage.id.startsWith('streaming-')) {
+                // Replace the current streaming placeholder content authoritatively.
+                messages[messages.length - 1] = { ...lastMessage, content: cleanText }
+                return { messages, ...perSession }
+              }
+
+              // Ghost-bubble guard: if the last message is a finalized assistant
+              // message that already contains (or starts with) the incoming
+              // replacement, this is a late-arriving event from a secondary
+              // event source. Suppress it to avoid creating an extra bubble.
+              if (lastMessage && lastMessage.role === 'assistant' && !lastMessage.id.startsWith('streaming-')) {
+                const existing = lastMessage.content.trim()
+                const incoming = cleanText.trim()
+                if (existing && incoming && (existing.includes(incoming) || incoming.startsWith(existing.slice(0, GHOST_BUBBLE_PREFIX_LEN)))) {
+                  return { ...perSession }
+                }
+              }
+
+              // No active placeholder — create one with the replacement text.
+              const newMessage: Message = {
+                id: `streaming-${Date.now()}`,
+                role: 'assistant',
+                content: cleanText,
+                timestamp: new Date().toISOString()
+              }
+
+              // Re-anchor any orphaned (trailing) tool calls to this new message
+              // so they render above the text inside the same bubble, matching
+              // the streamChunk handler's behavior when it creates a placeholder.
+              const tcKey = resolvedKey || ''
+              const currentTCs = state.sessionToolCalls[tcKey]
+              let sessionToolCalls = state.sessionToolCalls
+              if (currentTCs?.some(tc => !tc.afterMessageId)) {
+                const updated = currentTCs.map(tc =>
+                  tc.afterMessageId ? tc : { ...tc, afterMessageId: newMessage.id }
+                )
+                sessionToolCalls = { ...state.sessionToolCalls, [tcKey]: updated }
+              }
+
+              return { messages: [...messages, newMessage], sessionToolCalls, ...perSession }
+            })
+          })
+
+          client.on('authError', (payload: unknown) => {
+            const p = (payload || {}) as {
+              code?: string
+              reason?: string
+              canRetryWithDeviceToken?: boolean
+              recommendedNextStep?: string
+              message?: string
+            }
+            // connected: false / connecting: false are set by the connect() catch
+            // block; this handler only adds the v4 structured fields.
+            const hint = p.recommendedNextStep
+              ? (AUTH_ERROR_HINT_MAP[p.recommendedNextStep] || p.recommendedNextStep)
+              : null
+            set({
+              connectionError: p.message || 'Authentication failed',
+              connectionErrorHint: hint,
             })
           })
 
@@ -2893,7 +3049,19 @@ export const useStore = create<AppState>()(
             return get().connect()
           }
 
-          const connectionError = err instanceof Error ? err.message : 'Connection failed'
+          // SERVER_STARTING is a sentinel for a retryable v4 UNAVAILABLE+startup-sidecars
+          // response. The client is already running its own reconnect loop with the
+          // server-supplied retryAfterMs as a floor; surfacing the sentinel string as a
+          // user-visible error would confuse users during a transparent retry.
+          if (errMsg === 'SERVER_STARTING') {
+            set({ connecting: false })
+            return
+          }
+          const connectionError = errMsg || 'Connection failed'
+          // Don't clear connectionErrorHint here — the authError listener
+          // fires BEFORE this catch runs and may have already populated a
+          // structured v4 recovery hint. We cleared any stale hint at the
+          // start of connect() so a fresh attempt starts clean.
           set({ connecting: false, connected: false, connectionError })
           throw err
         }

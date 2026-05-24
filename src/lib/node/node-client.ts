@@ -169,7 +169,7 @@ export class NodeClient {
       method: 'connect',
       params: {
         minProtocol: 3,
-        maxProtocol: 3,
+        maxProtocol: 4,
         role: OPENCLAW_NODE_ROLE,
         scopes,
         client: {

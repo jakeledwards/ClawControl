@@ -70,6 +70,10 @@ export class OpenClawClient {
   private tickIntervalMs = 30000
   /** Server runtime version from hello-ok payload (v2026.3.11). */
   public serverVersion: string | null = null
+  /** Negotiated protocol version from hello-ok (3 = legacy, 4 = current). Defaults to 3 when missing. */
+  public negotiatedProtocol: number = 3
+  /** Plugin surface URLs map from hello-ok (e.g. { canvas: "https://..." }). */
+  public pluginSurfaceUrls: Record<string, string> = {}
   /** Watchdog timer that detects missed server ticks (dead connection). */
   private tickWatchTimer: ReturnType<typeof setTimeout> | null = null
   /** Timestamp of the last received server tick event. */
@@ -82,6 +86,9 @@ export class OpenClawClient {
   private networkChangeHandler: (() => void) | null = null
   /** Timer ID for pending reconnect attempt (so disconnect() can cancel it). */
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  /** One-shot minimum delay (ms) for the NEXT reconnect attempt, e.g. from
+   *  a v4 UNAVAILABLE/startup-sidecars retryAfterMs hint. Cleared after use. */
+  private nextReconnectDelayFloorMs: number | null = null
 
   // Per-session stream tracking — allows concurrent agent conversations
   // without cross-contaminating stream text buffers.
@@ -206,6 +213,8 @@ export class OpenClawClient {
 
         this.ws.onclose = () => {
           this.authenticated = false
+          this.negotiatedProtocol = 3
+          this.pluginSurfaceUrls = {}
           this.stopHealthCheck()
           this.stopTickWatch()
           // Emit synthetic streamEnd for any active streams so UI doesn't stay stuck
@@ -273,7 +282,15 @@ export class OpenClawClient {
     // Exponential backoff: 1s, 2s, 4s, 8s... capped at 30s, with ±25% jitter
     const base = Math.min(1000 * Math.pow(2, this.reconnectAttempts - 1), 30000)
     const jitter = base * 0.25 * (Math.random() * 2 - 1) // ±25%
-    const delay = Math.round(base + jitter)
+    let delay = Math.round(base + jitter)
+    // Honor any one-shot server-supplied retry floor (e.g. from a v4
+    // UNAVAILABLE/startup-sidecars retryAfterMs hint). Cap at 30s so a
+    // misbehaving server can't push us into multi-minute waits.
+    if (this.nextReconnectDelayFloorMs !== null) {
+      const floor = Math.min(this.nextReconnectDelayFloorMs, 30000)
+      delay = Math.max(delay, floor)
+      this.nextReconnectDelayFloorMs = null
+    }
 
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null
@@ -459,7 +476,7 @@ export class OpenClawClient {
       method: 'connect',
       params: {
         minProtocol: 3,
-        maxProtocol: 3,
+        maxProtocol: 4,
         role: 'operator',
         scopes,
         client: {
@@ -553,6 +570,20 @@ export class OpenClawClient {
           if (typeof version === 'string') {
             this.serverVersion = version
           }
+          // Capture negotiated protocol version (v2026.5.x added v4)
+          const protocol = resFrame.payload?.protocol
+          if (typeof protocol === 'number' && protocol >= 3) {
+            this.negotiatedProtocol = protocol
+          }
+          // Capture plugin surface URLs (v4 servers populate this; v3 servers omit it)
+          const surfaces = resFrame.payload?.pluginSurfaceUrls
+          if (surfaces && typeof surfaces === 'object' && !Array.isArray(surfaces)) {
+            const collected: Record<string, string> = {}
+            for (const [k, v] of Object.entries(surfaces)) {
+              if (typeof v === 'string' && v) collected[k] = v
+            }
+            this.pluginSurfaceUrls = collected
+          }
           this.startHealthCheck()
           this.resetTickWatch() // Start watching for server ticks
           this.emit('connected', resFrame.payload)
@@ -569,13 +600,41 @@ export class OpenClawClient {
             pending.reject(new Error(errorMsg))
           }
         } else if (!resFrame.ok && !this.authenticated) {
-          // Failed connect response — don't reconnect with same bad credentials
-          this.suppressReconnect = true
           const errorCode = resFrame.error?.code
           const errorMsg = resFrame.error?.message || 'Handshake failed'
+          const details = resFrame.error?.details
+          // Retryable startup-sidecars error — server is still booting. The
+          // protocol spec (openclaw docs/gateway/protocol.md "Handshake")
+          // asks clients to keep reconnecting within their budget instead of
+          // treating this as terminal auth failure.
+          if (
+            errorCode === 'UNAVAILABLE' &&
+            details && typeof details === 'object' && details.reason === 'startup-sidecars'
+          ) {
+            const retryAfterMs =
+              typeof details.retryAfterMs === 'number' && details.retryAfterMs > 0
+                ? details.retryAfterMs
+                : undefined
+            // Honor the server-supplied retry hint as a one-shot floor on the
+            // next reconnect delay so we don't hammer the gateway during boot.
+            if (retryAfterMs !== undefined) {
+              this.nextReconnectDelayFloorMs = retryAfterMs
+            }
+            this.emit('serverStarting', { retryAfterMs, message: errorMsg })
+            // Force-close the socket so onclose fires and attemptReconnect()
+            // runs even if the gateway keeps the WS open after returning
+            // UNAVAILABLE. Without this the client could stall indefinitely
+            // waiting for a close that never arrives. suppressReconnect stays
+            // false so the reconnect loop honors nextReconnectDelayFloorMs.
+            try { this.ws?.close() } catch { /* already closing */ }
+            reject?.(new Error('SERVER_STARTING'))
+            return
+          }
+          // Failed connect response — don't reconnect with same bad credentials
+          this.suppressReconnect = true
           if (errorCode === 'NOT_PAIRED') {
             this.emit('pairingRequired', {
-              requestId: resFrame.error?.details?.requestId,
+              requestId: details?.requestId,
               deviceId: this.deviceIdentity?.id
             })
             reject?.(new Error('NOT_PAIRED'))
@@ -588,6 +647,16 @@ export class OpenClawClient {
             this.emit('deviceIdentityStale')
             reject?.(new Error('DEVICE_IDENTITY_STALE'))
             return
+          }
+          // v4 auth error details (error.details.{code,reason,canRetryWithDeviceToken,recommendedNextStep})
+          if (details && typeof details === 'object') {
+            this.emit('authError', {
+              code: typeof details.code === 'string' ? details.code : errorCode,
+              reason: typeof details.reason === 'string' ? details.reason : undefined,
+              canRetryWithDeviceToken: details.canRetryWithDeviceToken === true,
+              recommendedNextStep: typeof details.recommendedNextStep === 'string' ? details.recommendedNextStep : undefined,
+              message: errorMsg
+            })
           }
           reject?.(new Error(errorMsg))
         }
@@ -820,6 +889,50 @@ export class OpenClawClient {
         const ss = this.getStream(sk)
 
         if (payload.state === 'delta') {
+          // v4 path: payload.deltaText is a true delta with optional replace flag.
+          if (typeof payload.deltaText === 'string') {
+            this.ensureStream(ss, 'chat', 'delta', payload.runId, sk)
+            if (ss.finalized || !ss.started || ss.source !== 'chat') return
+
+            let text = stripSystemNotifications(stripAnsi(payload.deltaText))
+            // Strip MEDIA: lines / trailing partial MEDIA tokens. No final trim
+            // because trimming mid-stream deltas would corrupt word boundaries.
+            if (text.includes('MEDIA')) {
+              text = text
+                .split('\n')
+                .filter(l => !/\bMEDIA:\s*/i.test(l))
+                .join('\n')
+                .replace(/\s*\bMEDIA\s*$/, '')
+            }
+            // Filter noise/heartbeat for the append path. The replace path
+            // intentionally skips this filter so that an authoritative empty
+            // replacement (deltaText: '' with replace=true) can clear the
+            // streaming placeholder rather than being silently dropped.
+            if (payload.replace !== true && (!text || isNoiseContent(text) || isHeartbeatContent(text))) return
+
+            if (payload.replace === true) {
+              // Authoritative replacement — overwrite accumulated text and tell the store.
+              ss.text = text
+              ss.blockOffset = 0
+              // Honor the single-stream-key guard used by applyStreamText.
+              if (this.activeStreamKey === null) {
+                this.activeStreamKey = sk
+              }
+              if (this.activeStreamKey === sk) {
+                this.emit('streamReplace', { text, sessionKey: sk })
+              }
+              return
+            }
+
+            // Append true delta. Route through mergeIncoming('delta') so the
+            // existing dedup, suffix-overlap, and runaway-text protections
+            // also cover v4 deltas if the server replays or overlaps frames.
+            const nextText = this.mergeIncoming(ss, text, 'delta')
+            this.applyStreamText(ss, nextText, sk)
+            return
+          }
+
+          // v3 path (cumulative payload.delta / payload.message.content) — unchanged.
           this.ensureStream(ss, 'chat', 'cumulative', payload.runId, sk)
           if (ss.source !== 'chat') return // Another stream type already claimed this session
 
@@ -1301,9 +1414,10 @@ export class OpenClawClient {
   }
 
   // Models
-  async listModels(): Promise<Array<{ id: string; name?: string; provider?: string }>> {
+  async listModels(view?: 'default' | 'configured' | 'all'): Promise<Array<{ id: string; name?: string; provider?: string }>> {
     try {
-      const result = await this._call<any>('models.list', {})
+      const params = view ? { view } : {}
+      const result = await this._call<any>('models.list', params)
       const models = result?.models
       if (!Array.isArray(models)) return []
       return models.map((m: any) => ({

@@ -40,7 +40,10 @@ export function SettingsModal() {
     addServerProfile,
     updateServerProfile,
     deleteServerProfile,
-    switchProfile
+    switchProfile,
+    protocolVersion,
+    gatewayServerVersion,
+    connectionErrorHint
   } = useStore()
 
   const [url, setUrl] = useState(serverUrl)
@@ -521,7 +524,12 @@ export function SettingsModal() {
 
               {error && <div className="form-error">{error}{error.toLowerCase().includes('origin not allowed') && originHelpBlock}</div>}
               {!error && !connected && connectionError && (
-                <div className="form-error">{connectionError}{connectionError.toLowerCase().includes('origin not allowed') && originHelpBlock}</div>
+                <>
+                  <div className="form-error">{connectionError}{connectionError.toLowerCase().includes('origin not allowed') && originHelpBlock}</div>
+                  {connectionErrorHint && (
+                    <div className="form-hint" style={{ marginTop: '4px' }}>{connectionErrorHint}</div>
+                  )}
+                </>
               )}
             </>
           )}
@@ -722,6 +730,10 @@ export function SettingsModal() {
 
           {connected && (
             <div className="form-group" style={{ borderTop: '1px solid var(--border)', paddingTop: '16px', marginTop: '16px' }}>
+              <div className="form-hint" style={{ marginBottom: '12px' }}>
+                Connected to {gatewayServerVersion ? <>OpenClaw v{gatewayServerVersion}</> : 'OpenClaw'}
+                {typeof protocolVersion === 'number' && <> (protocol v{protocolVersion})</>}
+              </div>
               <button
                 className="btn btn-secondary server-settings-link"
                 onClick={() => { setShowSettings(false); openServerSettings() }}
