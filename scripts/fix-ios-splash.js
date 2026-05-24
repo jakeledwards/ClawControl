@@ -58,7 +58,7 @@ function fixIosSplash() {
   console.log('✓  iOS splash screen images and Contents.json updated');
 
   // Check if LaunchScreen.storyboard exists and references Splash
-  const storyboardPath = path.join(PROJECT_ROOT, 'ios', 'App', 'App', 'LaunchScreen.storyboard');
+  const storyboardPath = path.join(PROJECT_ROOT, 'ios', 'App', 'App', 'Base.lproj', 'LaunchScreen.storyboard');
   if (fs.existsSync(storyboardPath)) {
     const content = fs.readFileSync(storyboardPath, 'utf8');
     if (content.includes('image="Splash"')) {
