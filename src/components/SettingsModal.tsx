@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useStore } from '../store'
-import { getPlatform, openExternal } from '../lib/platform'
+import { getPlatform, openExternal, clipboardWrite } from '../lib/platform'
 import { clearDeviceToken } from '../lib/device-identity'
 import { NodePermissionsDialog } from './NodePermissionsDialog'
 import { ConfirmDialog } from './ConfirmDialog'
@@ -540,11 +540,14 @@ export function SettingsModal() {
               // Invalid URL, link won't be shown
             }
 
+            const [copied, setCopied] = useState(false)
             const handleCopy = async () => {
               try {
-                await navigator.clipboard.writeText(approveCmd)
+                await clipboardWrite(approveCmd)
+                setCopied(true)
+                setTimeout(() => setCopied(false), 2000)
               } catch {
-                // Fallback for environments without clipboard API
+                // Clipboard unavailable
               }
             }
 
@@ -587,13 +590,19 @@ export function SettingsModal() {
                   <div style={{ position: 'absolute', top: '50%', right: '8px', transform: 'translateY(-50%)', display: 'flex', flexDirection: 'column', gap: '6px' }}>
                     <button
                       onClick={handleCopy}
-                      title="Copy command"
-                      style={{ width: '36px', height: '36px', borderRadius: '50%', border: '1px solid var(--border)', background: 'var(--bg-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', padding: 0 }}
+                      title={copied ? 'Copied!' : 'Copy command'}
+                      style={{ width: '36px', height: '36px', borderRadius: '50%', border: '1px solid var(--border)', background: copied ? 'var(--accent)' : 'var(--bg-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', padding: 0, transition: 'background 0.15s' }}
                     >
-                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-                      </svg>
+                      {copied ? (
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <polyline points="20 6 9 17 4 12" />
+                        </svg>
+                      ) : (
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                        </svg>
+                      )}
                     </button>
                     {canShare && (
                       <button
