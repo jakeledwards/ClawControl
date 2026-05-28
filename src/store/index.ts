@@ -493,10 +493,29 @@ async function syncNodePermissionsToServer(client: OpenClawClient, permissions: 
     // Skip patch if nothing changed
     if (merged.length === existing.length && merged.every(c => existing.includes(c))) return
 
-    await client.patchServerConfig(
-      { gateway: { nodes: { allowCommands: merged } } },
-      hash
-    )
+    const patch = { gateway: { nodes: { allowCommands: merged } } }
+    try {
+      await client.patchServerConfig(patch, hash)
+    } catch (err: any) {
+      // If the server rejects with "invalid config", the existing config has
+      // pre-existing validation errors. Surface them via the dry-run endpoint.
+      const msg = String(err?.message || err)
+      if (/invalid config/i.test(msg)) {
+        try {
+          const validation = await client.validateServerConfig(patch, hash)
+          if (!validation.valid && validation.errors?.length) {
+            console.warn(
+              '[node] Server config has pre-existing validation errors blocking patches:',
+              validation.errors
+            )
+            return
+          }
+        } catch {
+          // fall through to original error
+        }
+      }
+      throw err
+    }
   } catch (err) {
     // Non-fatal — user can still configure manually
     console.warn('[node] Failed to sync allowCommands to server config:', err)

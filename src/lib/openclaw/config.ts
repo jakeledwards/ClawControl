@@ -18,11 +18,35 @@ export async function getServerConfig(call: RpcCaller): Promise<{ config: any; h
  * Uses baseHash for optimistic conflict detection.
  * Note: config.patch triggers a server restart via SIGUSR1.
  *
- * Sends both `raw` (stringified JSON, for pre-3.28 servers) and `patch`
- * (direct object, for v2026.3.28+). The server uses whichever it understands.
+ * v2026.3.28+ accepts a direct `patch` object; earlier servers only accept
+ * a stringified `raw` payload and reject unknown root properties.
  */
-export async function patchServerConfig(call: RpcCaller, patch: object, baseHash: string): Promise<void> {
-  await call<any>('config.patch', { patch, raw: JSON.stringify(patch), baseHash })
+export async function patchServerConfig(
+  call: RpcCaller,
+  patch: object,
+  baseHash: string,
+  useObjectPatch: boolean = false
+): Promise<void> {
+  const params = useObjectPatch
+    ? { patch, baseHash }
+    : { raw: JSON.stringify(patch), baseHash }
+  await call<any>('config.patch', params)
+}
+
+/**
+ * Returns true if the given server version string is >= v2026.3.28,
+ * which introduced the direct-object `patch` parameter for config.patch.
+ */
+export function supportsObjectConfigPatch(serverVersion: string | null | undefined): boolean {
+  if (!serverVersion) return false
+  const m = serverVersion.match(/v?(\d+)\.(\d+)\.(\d+)/)
+  if (!m) return false
+  const year = Number(m[1])
+  const month = Number(m[2])
+  const day = Number(m[3])
+  if (year !== 2026) return year > 2026
+  if (month !== 3) return month > 3
+  return day >= 28
 }
 
 /**

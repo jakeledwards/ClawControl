@@ -121,6 +121,7 @@ export function ServerSettingsView() {
   const [saveResult, setSaveResult] = useState<'success' | 'error' | null>(null)
   const [validating, setValidating] = useState(false)
   const [validationErrors, setValidationErrors] = useState<Array<{ path: string; message: string }> | null>(null)
+  const [configErrors, setConfigErrors] = useState<Array<{ path: string; message: string }> | null>(null)
 
   // The original config from the server (read-only reference)
   const [originalConfig, setOriginalConfig] = useState<any>(null)
@@ -139,6 +140,21 @@ export function ServerSettingsView() {
       setOriginalConfig(result.config)
       setEditedConfig(result.config)
       setBaseHash(result.hash)
+
+      // Probe the server's view of its own config with an empty dry-run patch.
+      // If the existing config has validation errors, surface them so the user
+      // knows why saves may be rejected with "invalid config; fix before patching".
+      try {
+        const probe = await client.validateServerConfig({}, result.hash)
+        if (!probe.valid && probe.errors?.length) {
+          setConfigErrors(probe.errors)
+        } else {
+          setConfigErrors(null)
+        }
+      } catch {
+        // Older server without dry-run support — silently skip
+        setConfigErrors(null)
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load config')
     }
@@ -359,6 +375,35 @@ export function ServerSettingsView() {
           </div>
 
           <div className="settings-body">
+            {configErrors && configErrors.length > 0 && (
+              <div
+                className="settings-config-errors"
+                role="alert"
+                style={{
+                  margin: '12px 16px',
+                  padding: '12px 14px',
+                  border: '1px solid var(--color-error-border, #d9534f)',
+                  background: 'var(--color-error-bg, rgba(217, 83, 79, 0.08))',
+                  borderRadius: 6,
+                  color: 'var(--color-error-text, #b53e3a)',
+                }}
+              >
+                <div style={{ fontWeight: 600, marginBottom: 6 }}>
+                  Server config has {configErrors.length} validation error{configErrors.length !== 1 ? 's' : ''}
+                </div>
+                <div style={{ fontSize: 13, marginBottom: 8, opacity: 0.85 }}>
+                  The server will reject all patches (including from this UI) until these are fixed.
+                </div>
+                <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, fontFamily: 'var(--font-mono, monospace)' }}>
+                  {configErrors.map((e, i) => (
+                    <li key={i}>
+                      {e.path ? <strong>{e.path}: </strong> : null}
+                      {e.message}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             {tab === 'agent-defaults' && (
               <AgentDefaultsTab val={val} setValue={setValue} />
             )}

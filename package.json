@@ -1,6 +1,6 @@
 {
   "name": "clawcontrol",
-  "version": "1.7.2",
+  "version": "1.8.0",
   "description": "Desktop and mobile client for OpenClaw AI assistant",
   "main": "dist-electron/main.js",
   "author": {

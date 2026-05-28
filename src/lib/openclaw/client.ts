@@ -1519,7 +1519,8 @@ export class OpenClawClient {
   }
 
   async patchServerConfig(patch: object, baseHash: string): Promise<void> {
-    return configApi.patchServerConfig(this._call.bind(this), patch, baseHash)
+    const useObjectPatch = configApi.supportsObjectConfigPatch(this.serverVersion)
+    return configApi.patchServerConfig(this._call.bind(this), patch, baseHash, useObjectPatch)
   }
 
   /** Validate a config patch without applying it (v2026.3.22 dry-run). */
