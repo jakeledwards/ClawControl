@@ -28,9 +28,12 @@ export async function executeSlashCommand(
     case 'help':
       return executeHelp()
     case 'new':
-      return { content: 'Starting new session...', action: 'new-session' }
+      return { content: 'Starting a new session.', action: 'new-session' }
     case 'reset':
-      return { content: 'Resetting session...', action: 'reset' }
+      // Delete the current session on the server, then create a fresh one
+      // with the same agent — this matches OpenClaw's /reset semantics
+      // (clears the conversation context server-side, not just locally).
+      return { content: 'Resetting session — clearing server state and starting fresh.', action: 'reset' }
     case 'stop':
       return { content: 'Stopping current run...', action: 'stop' }
     case 'clear':

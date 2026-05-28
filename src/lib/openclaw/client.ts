@@ -53,6 +53,7 @@ export class OpenClawClient {
   private pendingRequests = new Map<string, {
     resolve: (value: unknown) => void
     reject: (error: Error) => void
+    timeoutHandle?: ReturnType<typeof setTimeout>
   }>()
   private eventHandlers = new Map<string, Set<EventHandler>>()
   private reconnectAttempts = 0
@@ -451,7 +452,8 @@ export class OpenClawClient {
   private rejectPendingRequests(reason: string): void {
     const pending = Array.from(this.pendingRequests.entries())
     this.pendingRequests.clear()
-    for (const [, { reject }] of pending) {
+    for (const [, { reject, timeoutHandle }] of pending) {
+      if (timeoutHandle) clearTimeout(timeoutHandle)
       try { reject(new Error(reason)) } catch { /* ignore */ }
     }
   }
@@ -514,19 +516,20 @@ export class OpenClawClient {
     const timeoutMs = options?.timeoutMs || 30000
 
     return new Promise((resolve, reject) => {
-      this.pendingRequests.set(id, {
-        resolve: resolve as (value: unknown) => void,
-        reject
-      })
-
-      this.ws!.send(JSON.stringify(request))
-
-      setTimeout(() => {
+      const timeoutHandle = setTimeout(() => {
         if (this.pendingRequests.has(id)) {
           this.pendingRequests.delete(id)
           reject(new Error(`Request timeout: ${method}`))
         }
       }, timeoutMs)
+
+      this.pendingRequests.set(id, {
+        resolve: resolve as (value: unknown) => void,
+        reject,
+        timeoutHandle
+      })
+
+      this.ws!.send(JSON.stringify(request))
     })
   }
 
@@ -593,6 +596,7 @@ export class OpenClawClient {
 
         if (pending) {
           this.pendingRequests.delete(resFrame.id)
+          if (pending.timeoutHandle) clearTimeout(pending.timeoutHandle)
           if (resFrame.ok) {
             pending.resolve(resFrame.payload)
           } else {
@@ -897,9 +901,10 @@ export class OpenClawClient {
             if (ss.finalized || !ss.started || ss.source !== 'chat') return
 
             let text = stripSystemNotifications(stripAnsi(payload.deltaText))
-            // Strip MEDIA: lines / trailing partial MEDIA tokens. No final trim
-            // because trimming mid-stream deltas would corrupt word boundaries.
-            if (text.includes('MEDIA')) {
+            // v3 servers send MEDIA: tokens inline in text. v4 servers pre-strip
+            // them and surface URLs in payload.mediaUrls instead, so this scrub
+            // is only needed for legacy v3.
+            if (this.negotiatedProtocol < 4 && text.includes('MEDIA')) {
               text = text
                 .split('\n')
                 .filter(l => !/\bMEDIA:\s*/i.test(l))
@@ -944,8 +949,8 @@ export class OpenClawClient {
               : (typeof payload.delta === 'string' ? stripAnsi(payload.delta) : '')
           )
 
-          // Strip MEDIA: lines and trailing partial MEDIA tokens from streaming text
-          if (rawText.includes('MEDIA')) {
+          // v3 only — v4 servers pre-strip MEDIA tokens and send payload.mediaUrls.
+          if (this.negotiatedProtocol < 4 && rawText.includes('MEDIA')) {
             rawText = rawText
               .split('\n')
               .filter(l => !/\bMEDIA:\s*/i.test(l))
@@ -1105,9 +1110,9 @@ export class OpenClawClient {
           let canonicalText = stripSystemNotifications(
             typeof payload.data?.text === 'string' ? stripModelSpecialTokens(stripAnsi(payload.data.text)) : ''
           )
-          // Strip MEDIA: lines and trailing partial MEDIA tokens from streaming text.
-          // Preserve stripped MEDIA: lines for lifecycle-end extraction.
-          if (canonicalText.includes('MEDIA')) {
+          // v3 only — v4 servers pre-strip MEDIA tokens from data.text and send
+          // payload.data.mediaUrls separately (captured below).
+          if (this.negotiatedProtocol < 4 && canonicalText.includes('MEDIA')) {
             const lines = canonicalText.split('\n')
             const mediaRe = /\bMEDIA:\s*/i
             for (const l of lines) {
@@ -1130,7 +1135,7 @@ export class OpenClawClient {
           let deltaText = stripSystemNotifications(
             typeof payload.data?.delta === 'string' ? stripAnsi(payload.data.delta) : ''
           )
-          if (deltaText.includes('MEDIA:')) {
+          if (this.negotiatedProtocol < 4 && deltaText.includes('MEDIA:')) {
             const deltaLines = deltaText.split('\n')
             const mediaRe = /\bMEDIA:\s*/i
             for (const l of deltaLines) {

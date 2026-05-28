@@ -231,6 +231,9 @@ interface AppState {
   messages: Message[]
   addMessage: (message: Message) => void
   clearMessages: () => void
+  /** Push a system-role message into the current chat. Used to surface RPC
+   *  errors and other non-fatal warnings instead of swallowing them. */
+  notifyError: (message: string) => void
   streamingSessions: Record<string, boolean>
   sessionHadChunks: Record<string, boolean>
   sessionToolCalls: Record<string, ToolCall[]>
@@ -844,7 +847,11 @@ export const useStore = create<AppState>()(
         if (client) {
           // Fetch workspace files and server config (for default model) in parallel
           const [filesResult, serverConfig] = await Promise.all([
-            client.getAgentFiles(agent.id),
+            client.getAgentFiles(agent.id).catch((err) => {
+              const msg = err instanceof Error ? err.message : String(err)
+              get().notifyError(`Failed to load files for ${agent.id}: ${msg}`)
+              return null
+            }),
             client.getServerConfig().catch(() => null)
           ])
 
@@ -869,11 +876,17 @@ export const useStore = create<AppState>()(
             const filesWithContent: AgentFile[] = []
             for (const file of filesResult.files) {
               if (!file.missing) {
-                const fileContent = await client.getAgentFile(agent.id, file.name)
-                filesWithContent.push({
-                  ...file,
-                  content: fileContent?.content
-                })
+                try {
+                  const fileContent = await client.getAgentFile(agent.id, file.name)
+                  filesWithContent.push({
+                    ...file,
+                    content: fileContent?.content
+                  })
+                } catch (err) {
+                  const msg = err instanceof Error ? err.message : String(err)
+                  get().notifyError(`Failed to load ${file.name}: ${msg}`)
+                  filesWithContent.push(file)
+                }
               } else {
                 filesWithContent.push(file)
               }
@@ -920,40 +933,58 @@ export const useStore = create<AppState>()(
         const { client } = get()
         if (!client) return false
 
-        const success = await client.setAgentFile(agentId, fileName, content)
-        if (success) {
-          // Update local state
-          set((state) => {
-            if (!state.selectedAgentDetail) return state
-            return {
-              selectedAgentDetail: {
-                ...state.selectedAgentDetail,
-                files: state.selectedAgentDetail.files.map((f) =>
-                  f.name === fileName ? { ...f, content, missing: false } : f
-                )
-              }
-            }
-          })
-
-          // Refresh agents list to update identity
-          await get().fetchAgents()
+        try {
+          await client.setAgentFile(agentId, fileName, content)
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          get().notifyError(`Failed to save ${fileName}: ${msg}`)
+          return false
         }
-        return success
+
+        // Update local state
+        set((state) => {
+          if (!state.selectedAgentDetail) return state
+          return {
+            selectedAgentDetail: {
+              ...state.selectedAgentDetail,
+              files: state.selectedAgentDetail.files.map((f) =>
+                f.name === fileName ? { ...f, content, missing: false } : f
+              )
+            }
+          }
+        })
+
+        // Refresh agents list to update identity
+        await get().fetchAgents()
+        return true
       },
       refreshAgentFiles: async (agentId) => {
         const { client, selectedAgentDetail } = get()
         if (!client || !selectedAgentDetail) return
 
-        const filesResult = await client.getAgentFiles(agentId)
+        let filesResult: Awaited<ReturnType<typeof client.getAgentFiles>>
+        try {
+          filesResult = await client.getAgentFiles(agentId)
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          get().notifyError(`Failed to load files for ${agentId}: ${msg}`)
+          return
+        }
         if (filesResult) {
           const filesWithContent: AgentFile[] = []
           for (const file of filesResult.files) {
             if (!file.missing) {
-              const fileContent = await client.getAgentFile(agentId, file.name)
-              filesWithContent.push({
-                ...file,
-                content: fileContent?.content
-              })
+              try {
+                const fileContent = await client.getAgentFile(agentId, file.name)
+                filesWithContent.push({
+                  ...file,
+                  content: fileContent?.content
+                })
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err)
+                get().notifyError(`Failed to load ${file.name}: ${msg}`)
+                filesWithContent.push(file)
+              }
             } else {
               filesWithContent.push(file)
             }
@@ -1052,8 +1083,7 @@ export const useStore = create<AppState>()(
             content = `- **Name:** ${newName.trim()}\n${content}`
           }
 
-          const success = await client.setAgentFile(agentId, 'IDENTITY.md', content)
-          if (!success) return false
+          await client.setAgentFile(agentId, 'IDENTITY.md', content)
 
           // For non-main agents, also update the config name so fetchAgents()
           // (which prefers config name over identity name) picks up the new name.
@@ -1102,6 +1132,8 @@ export const useStore = create<AppState>()(
           await get().fetchAgents()
           return true
         } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          get().notifyError(`Failed to rename agent: ${msg}`)
           return false
         }
       },
@@ -1110,6 +1142,16 @@ export const useStore = create<AppState>()(
       messages: [],
       addMessage: (message) => set((state) => ({ messages: [...state.messages, message] })),
       clearMessages: () => set({ messages: [] }),
+      notifyError: (message) => {
+        set((state) => ({
+          messages: [...state.messages, {
+            id: `error-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            role: 'system' as const,
+            content: message,
+            timestamp: new Date().toISOString()
+          }]
+        }))
+      },
       streamingSessions: {},
       sessionHadChunks: {},
       sessionToolCalls: {},
@@ -1153,8 +1195,34 @@ export const useStore = create<AppState>()(
         if (result.action === 'new-session') {
           await get().createNewSession()
         } else if (result.action === 'reset') {
-          get().clearMessages()
-          await get().fetchSessions()
+          // True session reset: delete the current session on the server so
+          // its conversation context is gone, then create a fresh session
+          // with the same agent. Previously this only cleared local state,
+          // which left the server-side history intact.
+          const { client, currentSessionId, currentAgentId } = get()
+          if (client && currentSessionId) {
+            try {
+              await client.deleteSession(currentSessionId)
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err)
+              get().notifyError(`Failed to delete session on server: ${msg}`)
+            }
+            // Drop the dead session from local state before creating the new one
+            set((state) => ({
+              sessions: state.sessions.filter(s => (s.key || s.id) !== currentSessionId),
+              messages: [],
+              currentSessionId: null,
+              activeSubagents: [],
+              streamingSessionId: null
+            }))
+          }
+          // Create a new session with the same agent (createNewSession reads
+          // currentAgentId from state; preserve it across the reset)
+          if (currentAgentId !== undefined) {
+            await get().createNewSession()
+          } else {
+            await get().fetchSessions()
+          }
         } else if (result.action === 'stop') {
           await get().abortChat()
         } else if (result.action === 'clear') {
@@ -1526,7 +1594,8 @@ export const useStore = create<AppState>()(
             try {
               await client.setAgentFile(agentId, 'IDENTITY.md', content)
             } catch (err) {
-              // Failed to write IDENTITY.md
+              const msg = err instanceof Error ? err.message : String(err)
+              get().notifyError(`New agent created, but writing IDENTITY.md failed: ${msg}`)
             }
 
             // Write avatar image as a separate file instead of embedding in IDENTITY.md
@@ -1537,7 +1606,8 @@ export const useStore = create<AppState>()(
                 const avatarPath = `avatars/${agentId}/${params.avatarFileName}`
                 await client.setAgentFile(agentId, avatarPath, base64Content)
               } catch (err) {
-                // Failed to write avatar file
+                const msg = err instanceof Error ? err.message : String(err)
+                get().notifyError(`New agent created, but writing avatar failed: ${msg}`)
               }
             }
           }
@@ -1692,12 +1762,14 @@ export const useStore = create<AppState>()(
             client.on('connected', onConnected)
           })
           await get().fetchHooks()
-        } catch {
+        } catch (err) {
           // Revert optimistic update
           set((state) => ({
             hooks: state.hooks.map(h => h.id === hookId ? { ...h, enabled: !enabled } : h),
             selectedHook: state.selectedHook?.id === hookId ? { ...state.selectedHook, enabled: !enabled } : state.selectedHook
           }))
+          const msg = err instanceof Error ? err.message : String(err)
+          get().notifyError(`Failed to ${enabled ? 'enable' : 'disable'} hook ${hookId}: ${msg}`)
         }
       },
       toggleInternalHooksEnabled: async (enabled) => {
@@ -1717,10 +1789,12 @@ export const useStore = create<AppState>()(
             client.on('connected', onConnected)
           })
           await get().fetchHooks()
-        } catch {
+        } catch (err) {
           set((state) => ({
             hooksConfig: { ...state.hooksConfig, internal: { ...state.hooksConfig.internal, enabled: !enabled } }
           }))
+          const msg = err instanceof Error ? err.message : String(err)
+          get().notifyError(`Failed to toggle internal hooks: ${msg}`)
         }
       },
 
@@ -1748,8 +1822,9 @@ export const useStore = create<AppState>()(
             _clawHubStatsCache.set(s.slug, { downloads: s.downloads, stars: s.stars })
           }
           set({ clawHubSkills: skills })
-        } catch {
-          // fetch failed
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          get().notifyError(`Failed to load ClawHub skills: ${msg}`)
         }
         set({ clawHubLoading: false })
       },
@@ -1772,8 +1847,9 @@ export const useStore = create<AppState>()(
             return s
           })
           set({ clawHubSkills: skills })
-        } catch {
-          // search failed
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          get().notifyError(`ClawHub search failed: ${msg}`)
         }
         set({ clawHubLoading: false })
       },

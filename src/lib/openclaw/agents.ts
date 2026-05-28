@@ -74,29 +74,20 @@ export async function getAgentIdentity(call: RpcCaller, agentId: string): Promis
 }
 
 export async function getAgentFiles(call: RpcCaller, agentId: string): Promise<{ workspace: string; files: Array<{ name: string; path: string; missing: boolean; size?: number }> } | null> {
-  try {
-    return await call<any>('agents.files.list', { agentId })
-  } catch {
-    return null
-  }
+  // Surface errors to the caller — silently returning null hides server failures.
+  return await call<any>('agents.files.list', { agentId })
 }
 
 export async function getAgentFile(call: RpcCaller, agentId: string, fileName: string): Promise<{ content?: string; missing: boolean } | null> {
-  try {
-    const result = await call<any>('agents.files.get', { agentId, name: fileName })
-    return result?.file || null
-  } catch {
-    return null
-  }
+  const result = await call<any>('agents.files.get', { agentId, name: fileName })
+  return result?.file || null
 }
 
 export async function setAgentFile(call: RpcCaller, agentId: string, fileName: string, content: string): Promise<boolean> {
-  try {
-    await call<any>('agents.files.set', { agentId, name: fileName, content })
-    return true
-  } catch (err) {
-    return false
-  }
+  // Throws on failure so the caller can show the server's error message.
+  // Previously returned false silently, which discarded user edits without warning.
+  await call<any>('agents.files.set', { agentId, name: fileName, content })
+  return true
 }
 
 export interface CreateAgentParams {
