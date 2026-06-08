@@ -26,7 +26,11 @@ describe('fix-android-edge-to-edge.js', () => {
 
   function runScript() {
     const scriptPath = join(process.cwd(), 'scripts', 'fix-android-edge-to-edge.js')
-    return execSync(`node ${scriptPath}`, { cwd: projectRoot, encoding: 'utf8' })
+    return execSync(`node ${JSON.stringify(scriptPath)}`, {
+      cwd: projectRoot,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe']
+    })
   }
 
   describe('fixMainActivity (surgical injection)', () => {
@@ -90,6 +94,40 @@ public class MainActivity extends BridgeActivity {
 
     it('fails loudly when MainActivity.java has no BridgeActivity anchor', () => {
       writeFileSync(mainActivityPath, 'package com.claw.control;\n\npublic class Unrelated {}\n')
+      writeFileSync(buildGradlePath, 'dependencies {\n  implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"\n}\n')
+      writeFileSync(stylesPath, '<resources><style name="AppTheme.NoActionBar"><item name="android:background">@null</item></style></resources>')
+
+      expect(() => runScript()).toThrow()
+    })
+
+    it('throws when MainActivity has no import block', () => {
+      // BridgeActivity anchor present, but no `import` lines whatsoever
+      writeFileSync(mainActivityPath, `package com.claw.control;
+
+public class MainActivity extends BridgeActivity {
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+    }
+}
+`)
+      writeFileSync(buildGradlePath, 'dependencies {\n  implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"\n}\n')
+      writeFileSync(stylesPath, '<resources><style name="AppTheme.NoActionBar"><item name="android:background">@null</item></style></resources>')
+
+      expect(() => runScript()).toThrow()
+    })
+
+    it('throws when MainActivity has no super.onCreate call', () => {
+      // Anchor + import block present, but onCreate is missing the super call
+      writeFileSync(mainActivityPath, `package com.claw.control;
+
+import android.os.Bundle;
+import com.getcapacitor.BridgeActivity;
+
+public class MainActivity extends BridgeActivity {
+    // intentionally no onCreate override
+}
+`)
       writeFileSync(buildGradlePath, 'dependencies {\n  implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"\n}\n')
       writeFileSync(stylesPath, '<resources><style name="AppTheme.NoActionBar"><item name="android:background">@null</item></style></resources>')
 

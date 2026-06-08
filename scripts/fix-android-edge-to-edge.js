@@ -52,22 +52,20 @@ function fixMainActivity() {
 
   // Inject the import (after the last existing import line)
   let patched = content;
-  const importBlockMatch = patched.match(/((?:^import .+;\n)+)/m);
-  if (importBlockMatch) {
-    if (!patched.includes('import androidx.activity.EdgeToEdge;')) {
-      patched = patched.replace(
-        importBlockMatch[0],
-        importBlockMatch[0] + 'import androidx.activity.EdgeToEdge;\n'
-      );
+  if (!patched.includes('import androidx.activity.EdgeToEdge;')) {
+    const importMatches = [...patched.matchAll(/^import .+;\r?\n/gm)];
+    if (importMatches.length === 0) {
+      throw new Error('fix-android-edge-to-edge: could not locate import block in MainActivity.java');
     }
-  } else {
-    throw new Error('fix-android-edge-to-edge: could not locate import block in MainActivity.java');
+    const lastImport = importMatches[importMatches.length - 1];
+    const insertAt = lastImport.index + lastImport[0].length;
+    patched = patched.slice(0, insertAt) + 'import androidx.activity.EdgeToEdge;\n' + patched.slice(insertAt);
   }
 
   // Inject EdgeToEdge.enable(this); inside onCreate, immediately before super.onCreate(...)
-  const superCallRegex = /^([ \t]*)super\.onCreate\(savedInstanceState\);/m;
+  const superCallRegex = /^([ \t]*)super\.onCreate\(\s*\w+\s*\);/m;
   if (!superCallRegex.test(patched)) {
-    throw new Error('fix-android-edge-to-edge: could not locate "super.onCreate(savedInstanceState);" in MainActivity.java');
+    throw new Error('fix-android-edge-to-edge: could not locate "super.onCreate(<arg>);" in MainActivity.java');
   }
   patched = patched.replace(superCallRegex, (_match, indent) =>
     `${indent}EdgeToEdge.enable(this);\n${indent}super.onCreate(savedInstanceState);`
