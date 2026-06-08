@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync } from 'fs'
-import { tmpdir } from 'os'
-import { join } from 'path'
-import { execSync } from 'child_process'
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { execSync } from 'node:child_process'
 
 describe('set-android-version.js', () => {
   let projectRoot
@@ -49,10 +49,12 @@ android {
   it('computes versionCode = major*10000 + minor*100 + patch for 1.8.0', () => {
     withPackageVersion('1.8.0')
     withGradle(SAMPLE_GRADLE)
-    runScript()
+    const stdout = runScript()
     const after = readFileSync(buildGradlePath, 'utf8')
     expect(after).toContain('versionCode 10800')
     expect(after).toContain('versionName "1.8.0"')
+    expect(stdout).toContain('versionCode=10800')
+    expect(stdout).toContain('versionName="1.8.0"')
   })
 
   it('handles patch versions: 1.8.7 → 10807', () => {
@@ -99,6 +101,13 @@ android {
   it('fails loudly when build.gradle has no versionCode line to replace', () => {
     withPackageVersion('1.8.0')
     withGradle('android {\n    defaultConfig {\n        applicationId "com.claw.control"\n    }\n}\n')
+    expect(() => runScript()).toThrow()
+  })
+
+  it('throws when package.json has no version field', () => {
+    // Write package.json WITHOUT a version field
+    writeFileSync(join(projectRoot, 'package.json'), JSON.stringify({ name: 'foo' }))
+    withGradle(SAMPLE_GRADLE)
     expect(() => runScript()).toThrow()
   })
 

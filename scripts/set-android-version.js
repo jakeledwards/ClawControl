@@ -34,13 +34,13 @@ function computeVersionCode(versionName) {
   }
   const [major, minor, patch] = parts;
   if (major > MAJOR_MAX) {
-    throw new Error(`set-android-version: major version ${major} exceeds max ${MAJOR_MAX}; widen the scheme in this script`);
+    throw new Error(`set-android-version: major version ${major} exceeds max ${MAJOR_MAX}; widen MAJOR_MAX and bump the 10000 multiplier (Android caps versionCode at 2,100,000,000)`);
   }
   if (minor > MINOR_MAX) {
-    throw new Error(`set-android-version: minor version ${minor} exceeds max ${MINOR_MAX}; widen the scheme in this script`);
+    throw new Error(`set-android-version: minor version ${minor} exceeds max ${MINOR_MAX}; widen MINOR_MAX and bump the 100 multiplier`);
   }
   if (patch > PATCH_MAX) {
-    throw new Error(`set-android-version: patch version ${patch} exceeds max ${PATCH_MAX}; widen the scheme in this script`);
+    throw new Error(`set-android-version: patch version ${patch} exceeds max ${PATCH_MAX}; widen PATCH_MAX`);
   }
   return major * 10000 + minor * 100 + patch;
 }
@@ -55,6 +55,9 @@ function main() {
 
   const pkg = JSON.parse(fs.readFileSync(PACKAGE_JSON, 'utf8'));
   const versionName = pkg.version;
+  if (typeof versionName !== 'string' || versionName.length === 0) {
+    throw new Error('set-android-version: package.json is missing a non-empty "version" field');
+  }
   const versionCode = computeVersionCode(versionName);
 
   let content = fs.readFileSync(BUILD_GRADLE, 'utf8');
@@ -67,6 +70,8 @@ function main() {
     throw new Error('set-android-version: could not find "versionName \\"...\\"" in android/app/build.gradle');
   }
 
+  // Non-global regex replaces only the first match — relies on defaultConfig
+  // appearing before any productFlavor blocks (Gradle convention).
   content = content.replace(/versionCode\s+\d+/, `versionCode ${versionCode}`);
   content = content.replace(/versionName\s+"[^"]*"/, `versionName "${versionName}"`);
 
