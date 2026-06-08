@@ -35,9 +35,17 @@ coverage/
 *.temp
 openclaw-src/
 
-# Capacitor native projects (generated, platform-specific)
+# Capacitor native projects
 ios/
-android/
+
+# Capacitor Android — committed; ignore build artifacts and local-only files only
+android/app/build/
+android/.gradle/
+android/build/
+android/local.properties
+android/app/release/
+android/app/upload-keystore.jks
+android/captures/
 
 # Local Capacitor plugins — track source + native code, exclude build output
 !plugins/
