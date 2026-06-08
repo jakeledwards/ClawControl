@@ -5,9 +5,13 @@
  * display and remove deprecated StatusBar APIs that trigger Play Store warnings.
  *
  * What it does:
- * 1. MainActivity.java — Adds EdgeToEdge.enable(this) in onCreate()
- * 2. build.gradle — Adds androidx.activity dependency for EdgeToEdge class
- * 3. styles.xml — Sets transparent statusBarColor and navigationBarColor
+ * 1. MainActivity.java — Injects EdgeToEdge import and EdgeToEdge.enable(this)
+ *    surgically (never replaces the whole file). Fails loudly if anchors missing.
+ * 2. build.gradle — Adds androidx.activity dependency for EdgeToEdge class.
+ * 3. styles.xml — Sets transparent statusBarColor and navigationBarColor.
+ *
+ * Versioning is owned by scripts/set-android-version.js; this script no
+ * longer touches versionCode or versionName.
  *
  * Run after `cap sync android`.
  */
@@ -15,7 +19,10 @@
 const fs = require('fs');
 const path = require('path');
 
-const PROJECT_ROOT = path.join(__dirname, '..');
+// Use the current working directory as the project root so this script can be
+// driven from tests against a temp project. In normal use (`node scripts/fix-android-edge-to-edge.js`
+// from the repo root) cwd === repo root, matching prior behavior.
+const PROJECT_ROOT = process.cwd();
 const ANDROID_APP = path.join(PROJECT_ROOT, 'android', 'app');
 const MAIN_SRC = path.join(ANDROID_APP, 'src', 'main');
 
@@ -29,54 +36,45 @@ function fixMainActivity() {
 
   const content = fs.readFileSync(filePath, 'utf8');
 
-  // Already patched
   if (content.includes('EdgeToEdge.enable')) {
     console.log('*  MainActivity.java already has EdgeToEdge.enable()');
     return true;
   }
 
-  const patched = `package com.claw.control;
-
-import android.os.Bundle;
-import androidx.activity.EdgeToEdge;
-import com.getcapacitor.BridgeActivity;
-
-public class MainActivity extends BridgeActivity {
-    @Override
-    protected void onCreate(Bundle savedInstanceState) {
-        EdgeToEdge.enable(this);
-        super.onCreate(savedInstanceState);
-    }
-}
-`;
-
-  fs.writeFileSync(filePath, patched);
-  console.log('+  MainActivity.java patched with EdgeToEdge.enable()');
-  return true;
-}
-
-// Android versionCode — bump this when publishing a new release to the Play Store
-const ANDROID_VERSION_CODE = 7;
-
-function fixVersionCode() {
-  const filePath = path.join(ANDROID_APP, 'build.gradle');
-
-  if (!fs.existsSync(filePath)) {
-    console.warn('!  build.gradle not found, skipping version patch');
-    return false;
+  const anchor = 'public class MainActivity extends BridgeActivity';
+  if (!content.includes(anchor)) {
+    throw new Error(
+      'fix-android-edge-to-edge: MainActivity.java does not contain the expected ' +
+      '"public class MainActivity extends BridgeActivity" anchor. Refusing to overwrite. ' +
+      'Inspect the file and patch manually.'
+    );
   }
 
-  let content = fs.readFileSync(filePath, 'utf8');
-  const pkg = JSON.parse(fs.readFileSync(path.join(PROJECT_ROOT, 'package.json'), 'utf8'));
+  // Inject the import (after the last existing import line)
+  let patched = content;
+  const importBlockMatch = patched.match(/((?:^import .+;\n)+)/m);
+  if (importBlockMatch) {
+    if (!patched.includes('import androidx.activity.EdgeToEdge;')) {
+      patched = patched.replace(
+        importBlockMatch[0],
+        importBlockMatch[0] + 'import androidx.activity.EdgeToEdge;\n'
+      );
+    }
+  } else {
+    throw new Error('fix-android-edge-to-edge: could not locate import block in MainActivity.java');
+  }
 
-  // Patch versionCode
-  content = content.replace(/versionCode \d+/, `versionCode ${ANDROID_VERSION_CODE}`);
+  // Inject EdgeToEdge.enable(this); inside onCreate, immediately before super.onCreate(...)
+  const superCallRegex = /^([ \t]*)super\.onCreate\(savedInstanceState\);/m;
+  if (!superCallRegex.test(patched)) {
+    throw new Error('fix-android-edge-to-edge: could not locate "super.onCreate(savedInstanceState);" in MainActivity.java');
+  }
+  patched = patched.replace(superCallRegex, (_match, indent) =>
+    `${indent}EdgeToEdge.enable(this);\n${indent}super.onCreate(savedInstanceState);`
+  );
 
-  // Patch versionName to match package.json
-  content = content.replace(/versionName "[^"]*"/, `versionName "${pkg.version}"`);
-
-  fs.writeFileSync(filePath, content);
-  console.log(`+  build.gradle patched: versionCode=${ANDROID_VERSION_CODE}, versionName="${pkg.version}"`);
+  fs.writeFileSync(filePath, patched);
+  console.log('+  MainActivity.java patched: EdgeToEdge import + enable() injected');
   return true;
 }
 
@@ -154,7 +152,7 @@ if (!fs.existsSync(path.join(PROJECT_ROOT, 'android', 'app'))) {
   process.exit(0);
 }
 
-const results = [fixMainActivity(), fixVersionCode(), fixBuildGradle(), fixStyles()];
+const results = [fixMainActivity(), fixBuildGradle(), fixStyles()];
 
 if (results.every(Boolean)) {
   console.log('done  Android edge-to-edge patches applied');
