@@ -6,7 +6,7 @@
 
 **Architecture:** Single repo, two new workflow files (`release.yml` extended; `android-ci.yml` new). `android/` committed to git as a normal Gradle project. Two new node scripts: `set-android-version.js` (versioning) and a refactored `fix-android-edge-to-edge.js` (post-`cap sync` patching, now surgical and version-free). Five GitHub secrets manage signing + Play upload.
 
-**Tech Stack:** GitHub Actions, Capacitor 8, AGP 8.x + JDK 17, Gradle, Node 22, Vitest (for script tests), `r0adkll/upload-google-play@v1` action, Play Console Developer API via service account.
+**Tech Stack:** GitHub Actions, Capacitor 8, AGP 8.x + JDK 21 (`@capacitor/geolocation` requires `JavaVersion.VERSION_21`), Gradle, Node 22, Vitest (for script tests), `r0adkll/upload-google-play@v1` action, Play Console Developer API via service account.
 
 **Source spec:** `docs/superpowers/specs/2026-06-08-android-build-pipeline-design.md`
 
@@ -1259,12 +1259,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # ---------- Android build (android only) ----------
-      - name: Setup JDK 17
+      - name: Setup JDK 21
         if: matrix.platform == 'android'
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '21'
 
       - name: Setup Android SDK
         if: matrix.platform == 'android'
@@ -1367,7 +1367,7 @@ git commit -m "Extend release.yml: Android matrix entry + APK/AAB build + Play u
 
 - Adds android matrix entry alongside mac/win/linux.
 - Gates the existing desktop build step with if: matrix.platform != 'android'.
-- Adds JDK 17 + Android SDK + Gradle cache setup.
+- Adds JDK 21 + Android SDK + Gradle cache setup.
 - Decodes the keystore from ANDROID_KEYSTORE_BASE64 secret.
 - Runs set-android-version.js before mobile:sync so versionCode is correct.
 - Builds release APK + AAB.
@@ -1424,11 +1424,11 @@ jobs:
           node-version: 22
           cache: npm
 
-      - name: Setup JDK 17
+      - name: Setup JDK 21
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '21'
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
