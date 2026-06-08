@@ -1,3 +1,5 @@
+def releaseKeystore = file("upload-keystore.jks")
+
 apply plugin: 'com.android.application'
 
 android {
@@ -16,8 +18,21 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        release {
+            if (releaseKeystore.exists()) {
+                storeFile releaseKeystore
+                storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD") ?: ""
+                keyAlias System.getenv("ANDROID_KEY_ALIAS") ?: ""
+                keyPassword System.getenv("ANDROID_KEY_PASSWORD") ?: ""
+            }
+        }
+    }
     buildTypes {
         release {
+            if (releaseKeystore.exists()) {
+                signingConfig signingConfigs.release
+            }
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
@@ -52,4 +67,19 @@ try {
     }
 } catch(Exception e) {
     logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
+}
+
+// Hard-fail if a release build is requested without the keystore present.
+// Prevents CI silently producing unsigned APKs/AABs when the decode step
+// is missing or misconfigured. See docs/superpowers/specs/2026-06-08-android-build-pipeline-design.md
+gradle.taskGraph.whenReady { graph ->
+    def needsRelease = graph.allTasks.any { t ->
+        t.name in ["assembleRelease", "bundleRelease", "packageRelease"]
+    }
+    if (needsRelease && !releaseKeystore.exists()) {
+        throw new GradleException(
+            "Release build requested but android/app/upload-keystore.jks is missing. " +
+            "CI must decode ANDROID_KEYSTORE_BASE64 before invoking Gradle."
+        )
+    }
 }
