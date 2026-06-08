@@ -110,6 +110,53 @@ node scripts/fix-android-edge-to-edge.js
 ```
 Expected: messages like `*  MainActivity.java already has EdgeToEdge.enable()` (the file we restored), `+  build.gradle patched with androidx.activity dependency`, `+  styles.xml patched with transparent system bar colors`.
 
+- [ ] **Step 6.5: Hand-patch Kotlin Gradle plugin support into the scaffolded root build files**
+
+The in-tree plugin `plugins/capacitor-native-websocket/android/build.gradle` applies `kotlin-android` and contains Kotlin sources (`NativeWebSocketPlugin.kt`, `TLSCertificateStore.kt`). But `cap add android` only scaffolds a Java-only root Gradle config. Without the Kotlin Gradle plugin on the buildscript classpath, `./gradlew assembleDebug` fails with `Plugin with id 'kotlin-android' not found`.
+
+This patching gets automated in Task 3 (it'll be added to the refactored `fix-android-edge-to-edge.js`). For now, hand-patch the two files.
+
+**6.5a — Add `kotlinVersion` to `android/variables.gradle`:**
+
+Edit `android/variables.gradle`, inside the `ext { ... }` block, add a line for `kotlinVersion`. The exact location doesn't matter as long as it's inside `ext`. Example:
+
+```gradle
+ext {
+    minSdkVersion = 24
+    compileSdkVersion = 36
+    targetSdkVersion = 36
+    kotlinVersion = '1.9.25'
+    // ... existing variables unchanged ...
+}
+```
+
+**6.5b — Add the Kotlin Gradle plugin classpath to `android/build.gradle`:**
+
+Edit `android/build.gradle`. In the `buildscript { dependencies { ... } }` block, add the Kotlin Gradle plugin classpath line alongside the existing AGP classpath:
+
+```gradle
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath 'com.android.tools.build:gradle:8.13.0'
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlinVersion"
+        classpath 'com.google.gms:google-services:4.4.4'
+    }
+}
+```
+
+Note: `$kotlinVersion` resolves at evaluation time because `apply from: "variables.gradle"` brings it into scope. If the AGP version line in your scaffold differs, preserve that — only ADD the kotlin classpath line.
+
+**6.5c — Verify the patches are in place:**
+
+```bash
+grep -n kotlinVersion android/variables.gradle android/build.gradle
+```
+Expected: at least 2 hits — one in `variables.gradle` (the def), one in `build.gradle` (the classpath reference).
+
 - [ ] **Step 7: Verify a debug build succeeds before any further changes**
 
 ```bash
