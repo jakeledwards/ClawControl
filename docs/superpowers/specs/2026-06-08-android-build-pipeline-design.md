@@ -65,7 +65,13 @@ Land these as a single bootstrap PR **before** wiring up any release-side automa
 ### 1.1 Commit the `android/` directory
 
 - Remove the `android/` line from `.gitignore`.
-- Before committing, run on a clean tree: `npx cap sync android` followed by `node scripts/fix-android-edge-to-edge.js` so the committed state already reflects the post-patch state.
+- **Bootstrap the full Gradle project locally first.** A fresh checkout has only the tracked Java files + `AndroidManifest.xml` — no `gradlew`, no `settings.gradle`, no `build.gradle`. `npx cap sync android` will NOT bootstrap those missing files. Instead:
+  1. Temporarily move the tracked Java/manifest files aside (e.g. `mv android/app/src/main/java /tmp/claw-java-backup`).
+  2. Delete the partial `android/` directory.
+  3. Run `npx cap add android` to scaffold the full native project.
+  4. Restore the custom Java files (esp. `MainActivity.java` with `registerPlugin(ConnectionServicePlugin.class)` and `setupInsetsHandling`, plus `ConnectionService.java`, `ConnectionServicePlugin.java`).
+  5. Run `node scripts/fix-android-edge-to-edge.js` so committed state reflects the post-patch state.
+  6. Verify locally with `cd android && ./gradlew assembleDebug`.
 - `git add android/` and commit.
 - Add these specific paths back to `.gitignore` (build artifacts, IDE state, local-only files):
   ```
@@ -80,25 +86,42 @@ Land these as a single bootstrap PR **before** wiring up any release-side automa
 
 ### 1.2 Add Gradle signing config
 
-Modify `android/app/build.gradle` so signing is environment-variable driven, with a graceful no-op fallback for local dev:
+Modify `android/app/build.gradle` so signing keys off the presence of the decoded keystore file (so the Gradle subprocess doesn't depend on env var inheritance), with a graceful no-op fallback for local dev. Critically, if `assembleRelease`/`bundleRelease` is invoked without a keystore, the build must **fail loudly** rather than silently produce an unsigned APK:
 
 ```gradle
+def releaseKeystore = file("upload-keystore.jks")
+
 android {
     signingConfigs {
         release {
-            if (System.getenv("ANDROID_KEYSTORE_BASE64")) {
-                storeFile file("upload-keystore.jks")
-                storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD")
-                keyAlias System.getenv("ANDROID_KEY_ALIAS")
-                keyPassword System.getenv("ANDROID_KEY_PASSWORD")
+            if (releaseKeystore.exists()) {
+                storeFile releaseKeystore
+                storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD") ?: ""
+                keyAlias System.getenv("ANDROID_KEY_ALIAS") ?: ""
+                keyPassword System.getenv("ANDROID_KEY_PASSWORD") ?: ""
             }
         }
     }
     buildTypes {
         release {
-            signingConfig signingConfigs.release
+            if (releaseKeystore.exists()) {
+                signingConfig signingConfigs.release
+            }
             // existing minify/proguard settings preserved
         }
+    }
+}
+
+// Hard-fail if a release build is requested without the keystore present.
+gradle.taskGraph.whenReady { graph ->
+    def needsRelease = graph.allTasks.any { t ->
+        t.name in ["assembleRelease", "bundleRelease", "packageRelease"]
+    }
+    if (needsRelease && !releaseKeystore.exists()) {
+        throw new GradleException(
+            "Release build requested but android/app/upload-keystore.jks is missing. " +
+            "CI must decode ANDROID_KEYSTORE_BASE64 before invoking Gradle."
+        )
     }
 }
 ```
@@ -116,7 +139,27 @@ Add `scripts/set-android-version.js`. The script:
 
 Wire the script into `npm run mobile:sync` and the CI workflow steps so the in-tree `build.gradle` always reflects `package.json` at build time. The committed `build.gradle` can carry stale values — the helper rewrites them before each build.
 
-### 1.4 `.gitattributes` for gradlew
+### 1.4 Remove duplicate version patching from `fix-android-edge-to-edge.js`
+
+`scripts/fix-android-edge-to-edge.js` currently hardcodes `const ANDROID_VERSION_CODE = 7` (line 59) and rewrites `versionCode`/`versionName` in `build.gradle` via `fixVersionCode()` (lines 61–81). If we leave this in place, running `mobile:sync` after `set-android-version.js` will clobber the computed `versionCode` with `7`.
+
+**Required change:** delete `fixVersionCode()` from the patch script and remove it from the `results = [...]` array at the bottom. Versioning becomes the sole responsibility of `set-android-version.js`.
+
+Order in CI:
+1. `set-android-version.js` (writes correct versionCode/versionName into `build.gradle`)
+2. `mobile:sync` → runs `cap sync android` → runs `fix-android-edge-to-edge.js` (no longer touches version)
+
+### 1.5 Harden `MainActivity.java` patch behavior
+
+The current `fix-android-edge-to-edge.js` `fixMainActivity()` (lines 22–56) **replaces the entire file contents** with a minimal template when `EdgeToEdge.enable` is absent. That template lacks the existing custom code:
+- `registerPlugin(ConnectionServicePlugin.class)`
+- The full `setupInsetsHandling()` method that injects safe-area-inset CSS variables and resizes the WebView container for the keyboard
+
+Today this is safe only because (a) `MainActivity.java` is tracked in git and already contains `EdgeToEdge.enable`, so the script hits its early-return branch. If Capacitor ever regenerates `MainActivity.java` without that string, the patch script will silently strip critical functionality.
+
+**Required change:** make `fixMainActivity()` surgical — inject `EdgeToEdge.enable(this);` and the `androidx.activity.EdgeToEdge` import into the existing file via regex, never replace the whole file. If the file is missing or the expected anchor (`public class MainActivity extends BridgeActivity`) can't be found, fail loudly rather than overwrite.
+
+### 1.6 `.gitattributes` for gradlew
 
 Ensure `android/gradlew` has executable bit preserved on checkout (Linux CI runners need it):
 ```
@@ -139,30 +182,60 @@ Add a fourth entry to the existing matrix in `.github/workflows/release.yml`:
 
 The artifact glob picks up the renamed APK so `softprops/action-gh-release@v2` attaches it to the release without code changes to that step.
 
-### 2.2 Android-specific steps (gated on `matrix.platform == 'android'`)
+### 2.2 Gate the existing desktop build step
 
-In order, conditional on the matrix entry:
+The current `release.yml` (lines 56–59) runs:
+
+```yaml
+- name: Build (${{ matrix.platform }})
+  run: npm run build:${{ matrix.platform }}
+```
+
+For the android matrix entry this would expand to `npm run build:android`, which does not exist and would fail the job. Add an `if:` guard:
+
+```yaml
+- name: Build (${{ matrix.platform }})
+  if: matrix.platform != 'android'
+  run: npm run build:${{ matrix.platform }}
+```
+
+### 2.3 Android-specific steps (gated on `matrix.platform == 'android'`)
+
+In order, conditional on the matrix entry. **Note the step ordering**: the GitHub Release APK upload runs *before* the Play AAB upload so a Play API hiccup doesn't block the APK from reaching the release page.
 
 1. **Setup JDK 17** — `actions/setup-java@v4` with `distribution: temurin`.
 2. **Setup Android SDK** — `android-actions/setup-android@v3` (caches SDK across runs).
 3. **Setup Gradle cache** — `gradle/actions/setup-gradle@v3` (Gradle build cache; cuts CI time ~50% after first run).
-4. **Decode keystore** — write `${{ secrets.ANDROID_KEYSTORE_BASE64 }}` (base64-decoded) to `android/app/upload-keystore.jks`. Use `echo "$SECRET" | base64 -d > ...`.
-5. **Sync versions into Gradle** — `node scripts/set-android-version.js`.
-6. **Build web + cap sync + edge-to-edge patch** — `npm run mobile:sync` (existing script in `package.json`).
+4. **Decode keystore** — write `${{ secrets.ANDROID_KEYSTORE_BASE64 }}` (base64-decoded) to `android/app/upload-keystore.jks`. Use `echo "$SECRET" | base64 -d > android/app/upload-keystore.jks`.
+5. **Sync versions into Gradle** — `node scripts/set-android-version.js`. Runs BEFORE `mobile:sync` so the new version values aren't overwritten.
+6. **Build web + cap sync + edge-to-edge patch** — `npm run mobile:sync` (existing script in `package.json`; after Section 1.4 change it no longer touches versionCode).
 7. **Build APK** — `cd android && ./gradlew assembleRelease`. Output: `android/app/build/outputs/apk/release/app-release.apk`.
 8. **Build AAB** — `cd android && ./gradlew bundleRelease`. Output: `android/app/build/outputs/bundle/release/app-release.aab`.
-9. **Rename APK** — `mv app-release.apk ClawControl-${VERSION}.apk` for nicer GitHub Release display.
-10. **Upload AAB to Play Console** — `r0adkll/upload-google-play@v1`:
-    - `serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}`
-    - `packageName: com.claw.control`
-    - `releaseFiles: android/app/build/outputs/bundle/release/app-release.aab`
-    - `track: production`
-    - `status: draft`
-    - `id: play_upload` (so later steps can reference its outcome)
-11. **Fallback: AAB to workflow artifacts on Play upload failure** — `actions/upload-artifact@v4`, `if: failure() && steps.play_upload.outcome == 'failure'`, retention 14 days. Lets you manually upload the AAB if the Play API is having a bad day.
-12. **GitHub Release attachment** — handled by the existing `softprops/action-gh-release@v2` step; the renamed APK matches the artifact glob.
+9. **Rename APK** — full paths:
+   ```sh
+   mv android/app/build/outputs/apk/release/app-release.apk \
+      android/app/build/outputs/apk/release/ClawControl-${VERSION}.apk
+   ```
+10. **(Existing) Upload to release** — the existing `softprops/action-gh-release@v2` step (release.yml line 61–66) picks up the renamed APK from the matrix `artifacts:` glob. **No reorder needed:** this step is already the last in the desktop pipeline; the Play upload steps go *after* it for the android matrix entry.
+11. **Upload AAB to Play Console** — explicitly tolerant of failure, with a step `id` so later steps can branch on the outcome. The `id:` and `continue-on-error:` are step-level keys (siblings of `uses:`/`with:`), not action inputs:
+    ```yaml
+    - name: Upload AAB to Play Console
+      id: play_upload
+      if: matrix.platform == 'android'
+      continue-on-error: true
+      uses: r0adkll/upload-google-play@v1
+      with:
+        serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        packageName: com.claw.control
+        releaseFiles: android/app/build/outputs/bundle/release/app-release.aab
+        track: production
+        status: draft
+    ```
+    Note on the `track` input: as of writing, `r0adkll/upload-google-play@v1` accepts a single `track:` string. If a future version of the action switches to `tracks:` (plural) per their README, update accordingly — verify before merge.
+12. **Fallback: AAB to workflow artifacts on Play upload failure** — `actions/upload-artifact@v4`, `if: matrix.platform == 'android' && steps.play_upload.outcome == 'failure'`, retention 14 days. Because step 11 has `continue-on-error: true`, the job overall still succeeds; you'll see the AAB attached to the workflow run and can re-upload manually.
+13. **Fail the job if Play upload failed** — final step `if: matrix.platform == 'android' && steps.play_upload.outcome == 'failure'` that runs `exit 1`. Keeps the job status honest (red) so the failure is visible at a glance, while preserving the artifacts uploaded in steps 10 and 12.
 
-### 2.3 Why these tool choices
+### 2.4 Why these tool choices
 
 - **`r0adkll/upload-google-play`** over Fastlane: single-purpose action, ~10 lines to configure. Fastlane pays off when you also manage screenshots/listings/in-app updates — out of scope here.
 - **In-matrix Android job** over a dedicated workflow: same trigger semantics as desktop, single version source of truth (the tag), parallel execution, `fail-fast: false` already in place.
@@ -227,6 +300,7 @@ on:
     paths:
       - 'android/**'
       - 'capacitor.config.ts'
+      - 'vite.config.mobile.ts'
       - 'scripts/fix-android-edge-to-edge.js'
       - 'scripts/set-android-version.js'
       - 'package.json'
@@ -274,8 +348,14 @@ Force-pushes to a PR cancel the older run.
 Order matters — don't try to ship before the prerequisites exist.
 
 1. **Bootstrap PR (Section 1 changes):**
-   - Commit `android/`, update `.gitignore`, add signing config, add version helper, fix `gradlew` exec bit.
-   - This PR has no CI yet (workflows land in step 4), so verify locally with `npm run mobile:android` + `./gradlew assembleDebug`.
+   - Bootstrap full `android/` Gradle project per Section 1.1 (backup custom Java files → `cap add android` → restore custom files → `fix-android-edge-to-edge.js`).
+   - Update `.gitignore` per Section 1.1.
+   - Add Gradle signing config per Section 1.2.
+   - Add `scripts/set-android-version.js` per Section 1.3.
+   - Strip `fixVersionCode()` out of `scripts/fix-android-edge-to-edge.js` per Section 1.4.
+   - Make `fixMainActivity()` surgical per Section 1.5.
+   - Fix `gradlew` exec bit + `.gitattributes` per Section 1.6.
+   - This PR has no CI yet (workflows land in step 4), so verify locally with `npm run mobile:android` + `cd android && ./gradlew assembleDebug` + a dry `./gradlew assembleRelease` after manually placing a local-test keystore (then delete it; never commit).
 2. **Generate keystore + populate 5 GitHub secrets** (Section 3.3).
 3. **Set up Play service account + populate `PLAY_SERVICE_ACCOUNT_JSON`** (Section 3.4).
 4. **Workflow PR:**
