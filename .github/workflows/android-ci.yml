@@ -1,0 +1,65 @@
+name: Android CI
+
+on:
+  pull_request:
+    paths:
+      - 'android/**'
+      - 'capacitor.config.ts'
+      - 'vite.config.mobile.ts'
+      - 'scripts/fix-android-edge-to-edge.js'
+      - 'scripts/set-android-version.js'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'src/**'
+      - 'plugins/capacitor-native-websocket/**'
+      - '.github/workflows/android-ci.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: android-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  debug-build:
+    name: Build debug APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Sync Android version from package.json
+        run: node scripts/set-android-version.js
+
+      - name: Build web + cap sync + edge-to-edge patch
+        run: npm run mobile:sync
+
+      - name: Build debug APK
+        run: cd android && ./gradlew assembleDebug
+
+      - name: Upload debug APK as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-${{ github.event.pull_request.number || github.run_id }}.apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 7
