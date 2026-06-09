@@ -66,38 +66,46 @@ function capacitorStubPlugin(): Plugin {
   }
 }
 
+const isVitest = process.env.VITEST === 'true' || !!process.env.VITEST_WORKER_ID
+
 export default defineConfig({
   plugins: [
     capacitorStubPlugin(),
     react(),
-    electron([
-      {
-        entry: 'electron/main.ts',
-        onstart(options) {
-          options.startup()
-        },
-        vite: {
-          build: {
-            outDir: 'dist-electron',
-            rollupOptions: {
-              external: ['electron']
+    // Skip Electron plugins under Vitest so Node built-ins (fs, path, child_process)
+    // aren't rewritten to the electron-renderer CJS shim, which breaks test imports.
+    ...(isVitest
+      ? []
+      : [
+          electron([
+            {
+              entry: 'electron/main.ts',
+              onstart(options) {
+                options.startup()
+              },
+              vite: {
+                build: {
+                  outDir: 'dist-electron',
+                  rollupOptions: {
+                    external: ['electron']
+                  }
+                }
+              }
+            },
+            {
+              entry: 'electron/preload.ts',
+              onstart(options) {
+                options.reload()
+              },
+              vite: {
+                build: {
+                  outDir: 'dist-electron'
+                }
+              }
             }
-          }
-        }
-      },
-      {
-        entry: 'electron/preload.ts',
-        onstart(options) {
-          options.reload()
-        },
-        vite: {
-          build: {
-            outDir: 'dist-electron'
-          }
-        }
-      }
-    ]),
-    renderer()
+          ]),
+          renderer()
+        ])
   ],
   server: {
     host: '127.0.0.1',
@@ -112,6 +120,9 @@ export default defineConfig({
     globals: true,
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],
-    include: ['src/**/*.{test,spec}.{js,ts,jsx,tsx}']
+    include: [
+      'src/**/*.{test,spec}.{js,ts,jsx,tsx}',
+      'scripts/**/*.test.{js,ts}'
+    ]
   }
 })
