@@ -37,6 +37,10 @@ jobs:
             artifacts: |
               release/*.AppImage
               release/*.deb
+          - os: ubuntu-latest
+            platform: android
+            artifacts: |
+              android/app/build/outputs/apk/release/ClawControl-*.apk
 
     steps:
       - name: Checkout
@@ -53,14 +57,100 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # ---------- Desktop build (mac / win / linux only) ----------
       - name: Build (${{ matrix.platform }})
+        if: matrix.platform != 'android'
         run: npm run build:${{ matrix.platform }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # ---------- Android build (android only) ----------
+      - name: Setup JDK 21
+        if: matrix.platform == 'android'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup Android SDK
+        if: matrix.platform == 'android'
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Gradle
+        if: matrix.platform == 'android'
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Decode keystore
+        if: matrix.platform == 'android'
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 -d > android/app/upload-keystore.jks
+          test -s android/app/upload-keystore.jks || { echo "Keystore decode produced empty file"; exit 1; }
+
+      - name: Sync Android version from package.json
+        if: matrix.platform == 'android'
+        run: node scripts/set-android-version.js
+
+      - name: Build web + cap sync + edge-to-edge patch
+        if: matrix.platform == 'android'
+        run: npm run mobile:sync
+
+      - name: Build release APK
+        if: matrix.platform == 'android'
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: cd android && ./gradlew assembleRelease
+
+      - name: Build release AAB
+        if: matrix.platform == 'android'
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: cd android && ./gradlew bundleRelease
+
+      - name: Rename APK to include version
+        if: matrix.platform == 'android'
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          mv android/app/build/outputs/apk/release/app-release.apk \
+             android/app/build/outputs/apk/release/ClawControl-${VERSION}.apk
+          ls -la android/app/build/outputs/apk/release/
+
+      # ---------- Attach artifacts to GitHub Release (all platforms) ----------
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
           files: ${{ matrix.artifacts }}
           fail_on_unmatched_files: false
+
+      # ---------- Play Console upload (android only, after GitHub Release attach) ----------
+      - name: Upload AAB to Play Console
+        id: play_upload
+        if: matrix.platform == 'android'
+        continue-on-error: true
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: com.claw.control
+          releaseFiles: android/app/build/outputs/bundle/release/app-release.aab
+          track: production
+          status: draft
+
+      - name: AAB fallback artifact (on Play upload failure)
+        if: matrix.platform == 'android' && steps.play_upload.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: aab-fallback-${{ github.ref_name }}
+          path: android/app/build/outputs/bundle/release/app-release.aab
+          retention-days: 14
+
+      - name: Fail job if Play upload failed
+        if: matrix.platform == 'android' && steps.play_upload.outcome == 'failure'
+        run: |
+          echo "::error::Play Console upload failed. AAB attached as workflow artifact 'aab-fallback-${{ github.ref_name }}' for manual upload."
+          exit 1
