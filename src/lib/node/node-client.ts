@@ -223,13 +223,23 @@ export class NodeClient {
       if (msg.type === 'res' && !msg.ok && !this.authenticated) {
         const errorCode = msg.error?.code
         const errorMsg = msg.error?.message || 'Node handshake failed'
+        const details = msg.error?.details
+        const detailCode = typeof details?.code === 'string' ? details.code : undefined
+        const detailReason = typeof details?.reason === 'string' ? details.reason : undefined
 
-        if (errorCode === 'NOT_PAIRED') {
+        // v3 NOT_PAIRED + v4 structured codes that all map to "user must pair".
+        if (
+          errorCode === 'NOT_PAIRED' ||
+          detailCode === 'PAIRING_REQUIRED' ||
+          detailCode === 'DEVICE_IDENTITY_REQUIRED' ||
+          detailCode === 'CONTROL_UI_DEVICE_IDENTITY_REQUIRED'
+        ) {
           // Suppress reconnect — pairing must happen first
           this.maxReconnectAttempts = 0
           this.emit('pairingRequired', {
-            requestId: msg.error?.details?.requestId,
-            deviceId: this.deviceIdentity?.id
+            requestId: details?.requestId,
+            deviceId: this.deviceIdentity?.id,
+            reason: detailReason
           })
           reject?.(new Error('NOT_PAIRED'))
           return

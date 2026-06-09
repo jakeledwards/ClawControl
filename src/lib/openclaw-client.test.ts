@@ -789,4 +789,125 @@ describe('OpenClawClient', () => {
       expect(true).toBe(true)
     })
   })
+
+  describe('handshake error routing', () => {
+    // Drive the private connect-response code path with a synthesized failed
+    // hello response. Connect must NOT be called first because the path only
+    // runs while !this.authenticated.
+    const failedResFrame = (error: { code?: string; message?: string; details?: Record<string, unknown> }) =>
+      JSON.stringify({ type: 'res', id: 'h1', ok: false, error })
+
+    it('fires pairingRequired for legacy NOT_PAIRED top-level code', () => {
+      const handler = vi.fn()
+      client.on('pairingRequired', handler)
+
+      // @ts-expect-error - accessing private method for testing
+      client.handleMessage(failedResFrame({ code: 'NOT_PAIRED', message: 'pair the device', details: { requestId: 'req-1' } }))
+
+      expect(handler).toHaveBeenCalledTimes(1)
+      expect(handler).toHaveBeenCalledWith(expect.objectContaining({ requestId: 'req-1' }))
+    })
+
+    it('fires pairingRequired for v4 PAIRING_REQUIRED detail code', () => {
+      const pairing = vi.fn()
+      const authErr = vi.fn()
+      client.on('pairingRequired', pairing)
+      client.on('authError', authErr)
+
+      // @ts-expect-error - accessing private method for testing
+      client.handleMessage(failedResFrame({
+        code: 'UNAUTHORIZED',
+        message: 'pairing required',
+        details: { code: 'PAIRING_REQUIRED', reason: 'not-paired', requestId: 'req-2' }
+      }))
+
+      expect(pairing).toHaveBeenCalledTimes(1)
+      expect(pairing).toHaveBeenCalledWith(expect.objectContaining({ requestId: 'req-2', reason: 'not-paired' }))
+      // Must NOT also surface as generic auth error — that's the silent-failure bug.
+      expect(authErr).not.toHaveBeenCalled()
+    })
+
+    it('fires pairingRequired for CONTROL_UI_DEVICE_IDENTITY_REQUIRED', () => {
+      const handler = vi.fn()
+      client.on('pairingRequired', handler)
+
+      // @ts-expect-error - accessing private method for testing
+      client.handleMessage(failedResFrame({
+        code: 'UNAUTHORIZED',
+        message: 'device identity required',
+        details: { code: 'CONTROL_UI_DEVICE_IDENTITY_REQUIRED' }
+      }))
+
+      expect(handler).toHaveBeenCalledTimes(1)
+    })
+
+    it('fires deviceIdentityStale for DEVICE_AUTH_PUBLIC_KEY_INVALID', () => {
+      const stale = vi.fn()
+      const authErr = vi.fn()
+      client.on('deviceIdentityStale', stale)
+      client.on('authError', authErr)
+
+      // @ts-expect-error - accessing private method for testing
+      client.handleMessage(failedResFrame({
+        code: 'UNAUTHORIZED',
+        message: 'device public key not recognized',
+        details: { code: 'DEVICE_AUTH_PUBLIC_KEY_INVALID' }
+      }))
+
+      expect(stale).toHaveBeenCalledTimes(1)
+      expect(authErr).not.toHaveBeenCalled()
+    })
+
+    it('fires deviceIdentityStale for DEVICE_AUTH_DEVICE_ID_MISMATCH', () => {
+      const handler = vi.fn()
+      client.on('deviceIdentityStale', handler)
+
+      // @ts-expect-error - accessing private method for testing
+      client.handleMessage(failedResFrame({
+        code: 'UNAUTHORIZED',
+        message: 'device id mismatch',
+        details: { code: 'DEVICE_AUTH_DEVICE_ID_MISMATCH' }
+      }))
+
+      expect(handler).toHaveBeenCalledTimes(1)
+    })
+
+    it('fires originNotAllowed for CONTROL_UI_ORIGIN_NOT_ALLOWED', () => {
+      const origin = vi.fn()
+      const authErr = vi.fn()
+      client.on('originNotAllowed', origin)
+      client.on('authError', authErr)
+
+      // @ts-expect-error - accessing private method for testing
+      client.handleMessage(failedResFrame({
+        code: 'INVALID_REQUEST',
+        message: 'origin not allowed (open the Control UI from the gateway host or allow it in gateway.controlUi.allowedOrigins)',
+        details: { code: 'CONTROL_UI_ORIGIN_NOT_ALLOWED', reason: 'origin missing or invalid' }
+      }))
+
+      expect(origin).toHaveBeenCalledTimes(1)
+      expect(origin).toHaveBeenCalledWith(expect.objectContaining({ reason: 'origin missing or invalid' }))
+      expect(authErr).not.toHaveBeenCalled()
+    })
+
+    it('still falls through to authError for unrecognized v4 detail codes', () => {
+      const authErr = vi.fn()
+      const pairing = vi.fn()
+      client.on('authError', authErr)
+      client.on('pairingRequired', pairing)
+
+      // @ts-expect-error - accessing private method for testing
+      client.handleMessage(failedResFrame({
+        code: 'UNAUTHORIZED',
+        message: 'token not configured',
+        details: { code: 'AUTH_TOKEN_NOT_CONFIGURED', recommendedNextStep: 'update_auth_configuration' }
+      }))
+
+      expect(pairing).not.toHaveBeenCalled()
+      expect(authErr).toHaveBeenCalledWith(expect.objectContaining({
+        code: 'AUTH_TOKEN_NOT_CONFIGURED',
+        recommendedNextStep: 'update_auth_configuration'
+      }))
+    })
+  })
 })

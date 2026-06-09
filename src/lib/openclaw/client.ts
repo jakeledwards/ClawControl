@@ -636,27 +636,69 @@ export class OpenClawClient {
           }
           // Failed connect response — don't reconnect with same bad credentials
           this.suppressReconnect = true
-          if (errorCode === 'NOT_PAIRED') {
+
+          // Detail code is the v4 canonical (error.details.code); top-level
+          // error.code is the legacy v3 path. Recognize both.
+          const detailCode = typeof details?.code === 'string' ? details.code : undefined
+          const detailReason = typeof details?.reason === 'string' ? details.reason : undefined
+
+          // Pairing required — server wants the device approved before it
+          // will issue a session. v3 returns top-level NOT_PAIRED; v4 returns
+          // detail code PAIRING_REQUIRED with a reason (not-paired,
+          // role-upgrade, scope-upgrade, metadata-upgrade). Also catch the
+          // device-identity-required codes which mean the same UX path:
+          // user must complete a pairing.
+          if (
+            errorCode === 'NOT_PAIRED' ||
+            detailCode === 'PAIRING_REQUIRED' ||
+            detailCode === 'DEVICE_IDENTITY_REQUIRED' ||
+            detailCode === 'CONTROL_UI_DEVICE_IDENTITY_REQUIRED'
+          ) {
             this.emit('pairingRequired', {
               requestId: details?.requestId,
-              deviceId: this.deviceIdentity?.id
+              deviceId: this.deviceIdentity?.id,
+              reason: detailReason
             })
             reject?.(new Error('NOT_PAIRED'))
             return
           }
-          // Stale device identity — keypair changed but server has old key.
-          // Signal the store to clear the identity and retry.
-          if (errorMsg.toLowerCase().includes('signature invalid') ||
-            errorMsg.toLowerCase().includes('signature mismatch')) {
+
+          // Stale device identity — keypair changed but server has old key,
+          // or server lost its key DB. Either way the local identity is no
+          // longer trusted and must be cleared so the next connect re-pairs.
+          // v3 path was substring on message text; v4 surfaces explicit codes.
+          if (
+            detailCode === 'DEVICE_AUTH_PUBLIC_KEY_INVALID' ||
+            detailCode === 'DEVICE_AUTH_DEVICE_ID_MISMATCH' ||
+            detailCode === 'DEVICE_AUTH_SIGNATURE_INVALID' ||
+            errorMsg.toLowerCase().includes('signature invalid') ||
+            errorMsg.toLowerCase().includes('signature mismatch')
+          ) {
             this.emit('deviceIdentityStale')
             reject?.(new Error('DEVICE_IDENTITY_STALE'))
             return
           }
+
+          // Origin not in server's allowlist — typically Capacitor native WS
+          // (no Origin header) or a browser/Electron build whose origin is
+          // not configured in gateway.controlUi.allowedOrigins. Throw with
+          // the server's friendly text so SettingsModal substring-matches
+          // "origin not allowed" and renders the originHelpBlock with the
+          // exact remediation command.
+          if (detailCode === 'CONTROL_UI_ORIGIN_NOT_ALLOWED') {
+            this.emit('originNotAllowed', {
+              reason: detailReason,
+              message: errorMsg
+            })
+            reject?.(new Error(errorMsg))
+            return
+          }
+
           // v4 auth error details (error.details.{code,reason,canRetryWithDeviceToken,recommendedNextStep})
           if (details && typeof details === 'object') {
             this.emit('authError', {
-              code: typeof details.code === 'string' ? details.code : errorCode,
-              reason: typeof details.reason === 'string' ? details.reason : undefined,
+              code: detailCode ?? errorCode,
+              reason: detailReason,
               canRetryWithDeviceToken: details.canRetryWithDeviceToken === true,
               recommendedNextStep: typeof details.recommendedNextStep === 'string' ? details.recommendedNextStep : undefined,
               message: errorMsg

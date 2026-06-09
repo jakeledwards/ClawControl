@@ -2640,6 +2640,24 @@ export const useStore = create<AppState>()(
             })
           })
 
+          client.on('originNotAllowed', (payload: unknown) => {
+            const p = (payload || {}) as { reason?: string; message?: string }
+            // The server's message already includes "origin not allowed (open
+            // the Control UI from the gateway host or allow it in
+            // gateway.controlUi.allowedOrigins)" — SettingsModal substring-
+            // matches that to render the originHelpBlock. We add an actionable
+            // hint and force Settings open so users without a paired device
+            // still see why send isn't working.
+            set({
+              connecting: false,
+              connected: false,
+              connectionError: p.message || 'Origin not allowed by server',
+              connectionErrorHint:
+                "Add this app's origin to gateway.controlUi.allowedOrigins on the OpenClaw server, or open ClawControl from the gateway host.",
+              showSettings: true,
+            })
+          })
+
           client.on('streamEnd', (payload: unknown) => {
             const { sessionKey } = (payload || {}) as { sessionKey?: string }
             const { currentSessionId } = get()
