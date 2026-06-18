@@ -5338,8 +5338,9 @@ a.message-image-fallback:hover {
    Applied to individual edge elements rather than .app to prevent layout shift.
 
    On iOS, the browser provides env(safe-area-inset-*) natively.
-   On Android 15+ with edge-to-edge enforced, env() returns 0 but Capacitor's
-   SystemBars plugin injects --safe-area-inset-* as CSS custom properties.
+   On Android 15+ with edge-to-edge enforced, env() returns 0, so the native
+   MainActivity injects --safe-area-inset-* as CSS custom properties from the
+   real window insets (re-injected on every page load — see MainActivity.java).
    We use var(--safe-area-inset-*, env(safe-area-inset-*, 0px)) to pick up
    whichever source provides the correct value. */
 
