@@ -46,6 +46,8 @@
 
 /* Dark Theme (Default) */
 [data-theme="dark"] {
+  color-scheme: dark;
+
   --bg-deep: #06080a;
   --bg-primary: #0d1117;
   --bg-elevated: #161b22;
@@ -82,6 +84,8 @@
 
 /* Light Theme */
 [data-theme="light"] {
+  color-scheme: light;
+
   --bg-deep: #f0f3f6;
   --bg-primary: #ffffff;
   --bg-elevated: #f6f8fa;

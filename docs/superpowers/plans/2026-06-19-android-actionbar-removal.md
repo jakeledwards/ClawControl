@@ -41,6 +41,7 @@ Create `android/app/src/androidTest/java/com/claw/control/MainActivityActionBarT
 ```java
 package com.claw.control;
 
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNull;
 
 import androidx.test.core.app.ActivityScenario;
@@ -57,6 +58,11 @@ public class MainActivityActionBarTest {
             scenario.onActivity(activity -> {
                 int actionBarId = activity.getResources()
                     .getIdentifier("action_bar", "id", "android");
+                assertNotEquals(
+                    "Framework action_bar resource must resolve",
+                    0,
+                    actionBarId
+                );
                 assertNull(
                     "MainActivity must not inflate a native ActionBar view",
                     activity.findViewById(actionBarId)
@@ -77,7 +83,7 @@ cd android
   -Pandroid.testInstrumentationRunnerArguments.class=com.claw.control.MainActivityActionBarTest
 ```
 
-Expected: FAIL because `findViewById(actionBarId)` returns the currently-inflated native `android.widget.Toolbar`, not `null`.
+Expected: the framework resource resolves to a nonzero ID, then the test FAILS because `findViewById(actionBarId)` returns the currently-inflated native `android.widget.Toolbar`, not `null`.
 
 - [ ] **Step 3: Make the launch theme explicitly titleless**
 
@@ -103,7 +109,7 @@ cd android
   -Pandroid.testInstrumentationRunnerArguments.class=com.claw.control.MainActivityActionBarTest
 ```
 
-Expected: `BUILD SUCCESSFUL`; the test passes with no native `android:id/action_bar` decor view.
+Expected: `BUILD SUCCESSFUL`; the framework `action_bar` resource resolves to a nonzero ID and the test passes with no native `android:id/action_bar` decor view.
 
 - [ ] **Step 5: Build and install the debug app**
 
@@ -139,12 +145,14 @@ Expected:
 Run:
 
 ```bash
-git diff --check
+git diff --check -- \
+  android/app/src/androidTest/java/com/claw/control/MainActivityActionBarTest.java \
+  android/app/src/main/res/values/styles.xml
 git diff -- android/app/src/androidTest/java/com/claw/control/MainActivityActionBarTest.java
 git diff -- android/app/src/main/res/values/styles.xml
 ```
 
-Expected: no whitespace errors; one new focused test; exactly two new theme attributes attributable to this fix. Pre-existing worktree changes remain present and unmodified.
+Expected: no whitespace errors in the task-owned files; one new focused test; exactly two new theme attributes attributable to this fix. Pre-existing worktree changes remain present and unmodified. A whole-worktree `git diff --check` may still report unrelated pre-existing CRLF/trailing-whitespace changes and is intentionally not used as this task's gate.
 
 - [ ] **Step 8: Commit only the test and the two theme attributes**
 
