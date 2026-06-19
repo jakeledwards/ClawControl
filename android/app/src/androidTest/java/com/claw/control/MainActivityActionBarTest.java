@@ -1,5 +1,6 @@
 package com.claw.control;
 
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNull;
 
 import androidx.test.core.app.ActivityScenario;
@@ -16,6 +17,11 @@ public class MainActivityActionBarTest {
             scenario.onActivity(activity -> {
                 int actionBarId = activity.getResources()
                     .getIdentifier("action_bar", "id", "android");
+                assertNotEquals(
+                    "Framework action_bar resource must resolve",
+                    0,
+                    actionBarId
+                );
                 assertNull(
                     "MainActivity must not inflate a native ActionBar view",
                     activity.findViewById(actionBarId)
