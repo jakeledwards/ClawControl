@@ -13,6 +13,14 @@
     <meta name="format-detection" content="telephone=no" />
     <meta name="msapplication-tap-highlight" content="no" />
     <title>ClawControl</title>
+    <!-- Dark base applied before any stylesheet/theme resolves. Prevents a white
+         startup frame from the WebView default background (which, under Android
+         edge-to-edge, freezes as a white strip behind the status bar that never
+         re-rasterizes). -->
+    <style>
+      html { background-color: #06080a; color-scheme: dark; }
+      body { background-color: #06080a; }
+    </style>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
