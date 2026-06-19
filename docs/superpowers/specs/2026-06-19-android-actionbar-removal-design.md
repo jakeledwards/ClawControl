@@ -10,10 +10,10 @@ Prevent the native ActionBar from being created while preserving the existing An
 
 ## Design
 
-Make `AppTheme.NoActionBarLaunch` explicitly titleless by setting both AppCompat theme attributes:
+Make `AppTheme.NoActionBarLaunch` explicitly titleless by setting both framework window attributes:
 
-- `windowActionBar` to `false`
-- `windowNoTitle` to `true`
+- `android:windowActionBar` to `false`
+- `android:windowNoTitle` to `true`
 
 The launch theme remains based on `Theme.SplashScreen` and continues handing off to `AppTheme.NoActionBar` through `postSplashScreenTheme`. No Java lifecycle changes and no web-layer changes are required.
 
@@ -21,7 +21,7 @@ This is preferable to calling `setTheme()` before `super.onCreate()` because the
 
 ## Verification
 
-Add an Android instrumentation regression test that launches `MainActivity` and asserts that no support ActionBar exists. Run it before the theme change to confirm it fails for the current behavior, then run it after the change to confirm it passes.
+Add an Android instrumentation regression test that launches `MainActivity` and asserts that the native `android:id/action_bar` decor view does not exist. Run it before the theme change to confirm it fails for the current behavior, then run it after the change to confirm it passes.
 
 Build and install the debug app on the active emulator, cold-launch it, and verify through the live UI hierarchy that:
 
