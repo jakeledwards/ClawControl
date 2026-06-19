@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- App background, matches the dark theme bg-deep in src/styles/index.css.
+         Used for the dark launch/window/splash background so no white frame is shown
+         before the WebView paints. -->
+    <color name="bg_deep">#06080a</color>
+</resources>

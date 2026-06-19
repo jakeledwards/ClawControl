@@ -13,6 +13,10 @@
         <item name="windowActionBar">false</item>
         <item name="windowNoTitle">true</item>
         <item name="android:background">@null</item>
+        <!-- Dark window background so the window behind the WebView is never white
+             (removes the brief white launch flash). -->
+        <item name="android:windowBackground">@color/bg_deep</item>
+        <item name="android:colorBackground">@color/bg_deep</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
     </style>
@@ -21,6 +25,12 @@
     <style name="AppTheme.NoActionBarLaunch" parent="Theme.SplashScreen">
         <item name="android:windowActionBar">false</item>
         <item name="android:windowNoTitle">true</item>
+        <!-- Dark splash/launch background (splash.png assets are also recolored to
+             #06080a) so there is no white flash before the WebView paints; hand off to
+             the dark app theme after the splash. -->
+        <item name="windowSplashScreenBackground">@color/bg_deep</item>
+        <item name="postSplashScreenTheme">@style/AppTheme.NoActionBar</item>
+        <item name="android:windowBackground">@color/bg_deep</item>
         <item name="android:background">@drawable/splash</item>
     </style>
 </resources>
