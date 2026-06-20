@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { useStore, selectSessionFastMode, selectSessionThinkingLevel } from '../store'
 
@@ -75,6 +75,58 @@ export function TopBar() {
     }
     return title || 'New Chat'
   }, [currentSession, agents])
+
+  // ----- Overflow menu (collapsed mobile header) -----
+  // All controls below reuse the existing store state/handlers; this is a
+  // presentation-only collapse of the inline header controls on narrow viewports.
+  const fastActive = fastModeEnabled || sessionFastMode
+  const anyModeActive = thinkingEnabled || fastActive || rightPanelOpen
+
+  const [menuOpen, setMenuOpen] = useState(false)
+  const menuBtnRef = useRef<HTMLButtonElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  const closeMenu = useCallback((restoreFocus = true) => {
+    setMenuOpen(false)
+    if (restoreFocus) menuBtnRef.current?.focus()
+  }, [])
+
+  const handleFastChange = useCallback((next: boolean) => {
+    setFastModeEnabled(next)
+    patchCurrentSession({ fastMode: next || null })
+  }, [setFastModeEnabled, patchCurrentSession])
+
+  // Focus the first menu item when the menu opens.
+  useEffect(() => {
+    if (!menuOpen) return
+    menuRef.current?.querySelector<HTMLElement>('[data-menu-item]')?.focus()
+  }, [menuOpen])
+
+  const handleMenuKeyDown = useCallback((e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === 'Escape') {
+      e.stopPropagation()
+      closeMenu()
+      return
+    }
+    const items = Array.from(
+      menuRef.current?.querySelectorAll<HTMLElement>('[data-menu-item]') ?? []
+    )
+    if (items.length === 0) return
+    const current = items.indexOf(document.activeElement as HTMLElement)
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      items[(current + 1) % items.length]?.focus()
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      items[(current - 1 + items.length) % items.length]?.focus()
+    } else if (e.key === 'Home') {
+      e.preventDefault()
+      items[0]?.focus()
+    } else if (e.key === 'End') {
+      e.preventDefault()
+      items[items.length - 1]?.focus()
+    }
+  }, [closeMenu])
 
   return (
     <header className="top-bar" data-testid="top-bar">
@@ -178,7 +230,7 @@ export function TopBar() {
         )}
 
         <button
-          className={`panel-toggle ${rightPanelOpen ? 'active' : ''}`}
+          className={`panel-toggle skills-panel-toggle ${rightPanelOpen ? 'active' : ''}`}
           onClick={() => setRightPanelOpen(!rightPanelOpen)}
           aria-label="Toggle right panel"
           aria-pressed={rightPanelOpen}
@@ -195,6 +247,128 @@ export function TopBar() {
             <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z" />
           </svg>
         </button>
+
+        {/* Collapsed-header overflow menu — shown only below the md breakpoint */}
+        <div className={`overflow-menu ${menuOpen ? 'open' : ''}`}>
+          <button
+            ref={menuBtnRef}
+            className="overflow-menu-btn"
+            aria-label="More controls"
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            onClick={() => setMenuOpen((open) => !open)}
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="5" r="1" />
+              <circle cx="12" cy="12" r="1" />
+              <circle cx="12" cy="19" r="1" />
+            </svg>
+            {anyModeActive && <span className="overflow-menu-indicator" aria-hidden="true" />}
+          </button>
+
+          {menuOpen && (
+            <>
+              <div className="overflow-menu-scrim" aria-hidden="true" onClick={() => closeMenu(false)} />
+              <div
+                ref={menuRef}
+                className="overflow-menu-dropdown"
+                role="menu"
+                aria-label="Header controls"
+                onKeyDown={handleMenuKeyDown}
+              >
+                <div className="overflow-menu-section-label">Message Mode</div>
+
+                <button
+                  type="button"
+                  data-menu-item
+                  role="switch"
+                  aria-checked={thinkingEnabled}
+                  className="overflow-menu-row thinking-row"
+                  onClick={() => setThinkingEnabled(!thinkingEnabled)}
+                >
+                  <span className="overflow-menu-icon-tile thinking">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                      <path d="M12 2C8.13 2 5 5.13 5 9c0 2.38 1.19 4.47 3 5.74V17a1 1 0 001 1h6a1 1 0 001-1v-2.26c1.81-1.27 3-3.36 3-5.74 0-3.87-3.13-7-7-7z" />
+                      <path d="M9 21h6M10 19v2M14 19v2" />
+                    </svg>
+                  </span>
+                  <span className="overflow-menu-row-text">
+                    <span className="overflow-menu-row-title">Thinking</span>
+                  </span>
+                  <span className="toggle-switch" aria-hidden="true">
+                    <span className="toggle-slider" />
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  data-menu-item
+                  role="switch"
+                  aria-checked={fastActive}
+                  className="overflow-menu-row fast-row"
+                  onClick={() => handleFastChange(!fastActive)}
+                >
+                  <span className="overflow-menu-icon-tile fast">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                      <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+                    </svg>
+                  </span>
+                  <span className="overflow-menu-row-text">
+                    <span className="overflow-menu-row-title">Fast</span>
+                  </span>
+                  <span className="toggle-switch" aria-hidden="true">
+                    <span className="toggle-slider" />
+                  </span>
+                </button>
+
+                <div className="overflow-menu-divider" role="separator" />
+
+                <button
+                  type="button"
+                  data-menu-item
+                  role="switch"
+                  aria-checked={rightPanelOpen}
+                  className="overflow-menu-row"
+                  onClick={() => { setRightPanelOpen(!rightPanelOpen); closeMenu(false) }}
+                >
+                  <span className="overflow-menu-icon-tile">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <rect x="3" y="3" width="18" height="18" rx="2" />
+                      <path d="M15 3v18" />
+                    </svg>
+                  </span>
+                  <span className="overflow-menu-row-text">
+                    <span className="overflow-menu-row-title">Skills Panel</span>
+                  </span>
+                  <span className="toggle-switch" aria-hidden="true">
+                    <span className="toggle-slider" />
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  data-menu-item
+                  role="menuitem"
+                  className="overflow-menu-row"
+                  onClick={() => { closeMenu(false); setShowSettings(true) }}
+                >
+                  <span className="overflow-menu-icon-tile">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <circle cx="12" cy="12" r="3" />
+                      <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z" />
+                    </svg>
+                  </span>
+                  <span className="overflow-menu-row-text">
+                    <span className="overflow-menu-row-title">Settings</span>
+                  </span>
+                  <svg className="overflow-menu-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="m9 18 6-6-6-6" />
+                  </svg>
+                </button>
+              </div>
+            </>
+          )}
+        </div>
       </div>
     </header>
   )

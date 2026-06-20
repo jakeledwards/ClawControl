@@ -62,6 +62,7 @@
   --accent-cyan-dim: #00a3bf;
   --accent-cyan-subtle: rgba(0, 217, 255, 0.1);
   --accent-purple: #a855f7;
+  --accent-purple-subtle: rgba(168, 85, 247, 0.1);
   --accent-green: #22c55e;
   --accent-amber: #f59e0b;
   --accent-red: #ef4444;
@@ -100,6 +101,7 @@
   --accent-cyan-dim: #0369a1;
   --accent-cyan-subtle: rgba(2, 132, 199, 0.1);
   --accent-purple: #7c3aed;
+  --accent-purple-subtle: rgba(124, 58, 237, 0.1);
   --accent-green: #16a34a;
   --accent-amber: #d97706;
   --accent-red: #dc2626;
@@ -1445,6 +1447,183 @@ a {
   display: none;
 }
 
+/* ===== Overflow menu (collapsed mobile header) ===== */
+/* Hidden on desktop; revealed below the md breakpoint and on capacitor-mobile. */
+.overflow-menu {
+  position: relative;
+  display: none;
+  -webkit-app-region: no-drag;
+}
+
+.overflow-menu-btn {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  transition: all var(--transition-fast);
+}
+
+.overflow-menu-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.overflow-menu-btn svg {
+  width: 20px;
+  height: 20px;
+}
+
+/* Keep the trigger above the scrim so a second tap closes the menu. */
+.overflow-menu.open .overflow-menu-btn {
+  z-index: 302;
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.overflow-menu-indicator {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-cyan);
+  box-shadow: var(--glow-cyan);
+}
+
+.overflow-menu-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+}
+
+.overflow-menu-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 301;
+  width: 238px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  animation: overflow-menu-pop var(--transition-fast) ease;
+}
+
+@keyframes overflow-menu-pop {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.overflow-menu-section-label {
+  padding: 6px 9px 4px;
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-secondary);
+}
+
+.overflow-menu-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  width: 100%;
+  padding: 10px 9px;
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  text-align: left;
+  transition: background var(--transition-fast);
+}
+
+.overflow-menu-row:hover {
+  background: var(--bg-hover);
+}
+
+.overflow-menu-icon-tile {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border-radius: var(--radius-sm);
+  background: var(--bg-deep);
+  color: var(--text-secondary);
+}
+
+.overflow-menu-icon-tile svg {
+  width: 16px;
+  height: 16px;
+}
+
+.overflow-menu-icon-tile.thinking {
+  color: var(--accent-purple);
+}
+
+.overflow-menu-icon-tile.fast {
+  color: var(--accent-cyan);
+}
+
+.overflow-menu-row-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1;
+  min-width: 0;
+}
+
+.overflow-menu-row-title {
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.overflow-menu-divider {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--border-subtle);
+}
+
+.overflow-menu-chevron {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+/* The in-row toggle is purely visual; it mirrors the row's aria-checked state. */
+.overflow-menu-row .toggle-switch {
+  flex-shrink: 0;
+  pointer-events: none;
+}
+
+.overflow-menu-row[aria-checked="true"] .toggle-slider {
+  background: var(--accent-cyan);
+  box-shadow: var(--glow-cyan);
+}
+
+.overflow-menu-row[aria-checked="true"] .toggle-slider::before {
+  transform: translateX(20px);
+  background: white;
+}
+
+/* Active "mode" rows get a faint accent wash. */
+.overflow-menu-row.thinking-row[aria-checked="true"] {
+  background: var(--accent-purple-subtle);
+}
+
+.overflow-menu-row.fast-row[aria-checked="true"] {
+  background: var(--accent-cyan-subtle);
+}
+
 /* ===== Chat Area ===== */
 .chat-area {
   flex: 1;
@@ -2689,12 +2868,30 @@ a {
   box-shadow: var(--glow-cyan);
 }
 
-.attach-btn {
-  width: 48px;
-  height: 48px;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-default);
-  border-radius: 50%;
+/* Composer field wraps the textarea so the attach button can dock inside it */
+.composer-field {
+  flex: 1;
+  min-width: 0;
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.composer-field textarea {
+  /* Leave room for the inline attach button docked at the right edge */
+  padding-right: 46px;
+}
+
+/* Attach (+) button: transparent, inside the field, anchored to the bottom-right */
+.attach-inline-btn {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  width: 36px;
+  height: 36px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-md);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2702,19 +2899,18 @@ a {
   transition: all var(--transition-fast);
 }
 
-.attach-btn:hover:not(:disabled) {
-  border-color: var(--accent-cyan);
+.attach-inline-btn:hover:not(:disabled) {
   color: var(--accent-cyan);
 }
 
-.attach-btn:disabled {
+.attach-inline-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
 
-.attach-btn svg {
-  width: 20px;
-  height: 20px;
+.attach-inline-btn svg {
+  width: 22px;
+  height: 22px;
 }
 
 .send-btn:hover:not(:disabled) {
@@ -4448,6 +4644,17 @@ a.message-image-fallback:hover {
   .connection-status .status-text {
     display: none;
   }
+
+  /* Collapse the header controls into the overflow (⋮) menu. */
+  .thinking-toggle,
+  .skills-panel-toggle,
+  .settings-btn {
+    display: none;
+  }
+
+  .overflow-menu {
+    display: flex;
+  }
 }
 
 /* ===== Accessibility ===== */
@@ -5431,9 +5638,13 @@ body.capacitor-mobile .voice-btn {
   height: 52px;
 }
 
-body.capacitor-mobile .attach-btn {
-  width: 52px;
-  height: 52px;
+body.capacitor-mobile .attach-inline-btn {
+  width: 40px;
+  height: 40px;
+}
+
+body.capacitor-mobile .composer-field textarea {
+  padding-right: 50px;
 }
 
 /* Always show delete buttons on mobile (no hover) */
@@ -5493,10 +5704,6 @@ body.capacitor-mobile.keyboard-visible .chat-area {
   }
 
   .voice-btn:hover:not(:disabled) {
-    transform: none;
-  }
-
-  .attach-btn:hover:not(:disabled) {
     transform: none;
   }
 
@@ -5618,6 +5825,17 @@ body.capacitor-mobile .thinking-icon {
 /* Hide theme toggle on mobile - moved to Settings */
 body.capacitor-mobile .theme-toggle {
   display: none;
+}
+
+/* Collapse the header controls into the overflow (⋮) menu on native mobile. */
+body.capacitor-mobile .thinking-toggle,
+body.capacitor-mobile .skills-panel-toggle,
+body.capacitor-mobile .settings-btn {
+  display: none;
+}
+
+body.capacitor-mobile .overflow-menu {
+  display: flex;
 }
 
 /* Mobile top-bar: tighter spacing */

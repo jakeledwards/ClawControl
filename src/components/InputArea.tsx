@@ -96,7 +96,10 @@ export function InputArea() {
   const { sendMessage, abortChat, connected, client, draftMessage, setDraftMessage } = useStore()
   const isStreaming = useStore(selectIsStreaming)
   const platform = getPlatform()
-  const hideMediaButtons = platform === 'ios'
+  // Mic/voice button is hidden on native mobile (iOS + Android); desktop and web
+  // keep it since speech recognition works there. The attach button is shown on
+  // every platform, docked inside the composer field.
+  const hideVoiceButton = platform === 'ios' || platform === 'android'
 
   const maxLength = 4000
 
@@ -779,47 +782,45 @@ export function InputArea() {
         </div>
       )}
       <div className="input-container">
-        {!hideMediaButtons && (
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
-            multiple
-            onChange={handleFileSelected}
-            style={{ display: 'none' }}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          multiple
+          onChange={handleFileSelected}
+          style={{ display: 'none' }}
+        />
+        <div className="composer-field">
+          <textarea
+            ref={textareaRef}
+            value={message}
+            onChange={handleChange}
+            onKeyDown={handleKeyDown}
+            onFocus={handleTextareaFocus}
+            onBlur={handleTextareaBlur}
+            onCompositionStart={handleCompositionStart}
+            onCompositionEnd={handleCompositionEnd}
+            placeholder="Type a message or /"
+            rows={1}
+            aria-label="Message input"
+            data-testid="message-input"
+            autoCorrect="on"
+            autoCapitalize="sentences"
+            spellCheck={true}
           />
-        )}
-        {!hideMediaButtons && (
           <button
-            className="attach-btn"
+            className="attach-inline-btn"
             onClick={handleAttachClick}
             disabled={isStreaming}
             aria-label="Attach images"
             title="Attach images"
           >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M21.44 11.05 12.25 20.24a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 1 1 5.66 5.66L9.41 17.4a2 2 0 0 1-2.82-2.82l8.49-8.48" />
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <path d="M12 5v14M5 12h14" />
             </svg>
           </button>
-        )}
-        <textarea
-          ref={textareaRef}
-          value={message}
-          onChange={handleChange}
-          onKeyDown={handleKeyDown}
-          onFocus={handleTextareaFocus}
-          onBlur={handleTextareaBlur}
-          onCompositionStart={handleCompositionStart}
-          onCompositionEnd={handleCompositionEnd}
-          placeholder="Type a message... (/ for commands)"
-          rows={1}
-          aria-label="Message input"
-          data-testid="message-input"
-          autoCorrect="on"
-          autoCapitalize="sentences"
-          spellCheck={true}
-        />
-        {!hideMediaButtons && (
+        </div>
+        {!hideVoiceButton && (
           <button
             className={`voice-btn${isListening ? ' listening' : ''}`}
             onClick={handleVoiceInput}
@@ -875,14 +876,16 @@ export function InputArea() {
         {voiceError ? (
           <span className="voice-error" role="status">
             {voiceError}
-            <button
-              type="button"
-              className="voice-retry-btn"
-              onClick={() => { setVoiceError(null); handleVoiceInput() }}
-              aria-label="Retry voice input"
-            >
-              Retry
-            </button>
+            {!hideVoiceButton && (
+              <button
+                type="button"
+                className="voice-retry-btn"
+                onClick={() => { setVoiceError(null); handleVoiceInput() }}
+                aria-label="Retry voice input"
+              >
+                Retry
+              </button>
+            )}
           </span>
         ) : (
           <span className="keyboard-hint">
