@@ -2689,12 +2689,30 @@ a {
   box-shadow: var(--glow-cyan);
 }
 
-.attach-btn {
-  width: 48px;
-  height: 48px;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-default);
-  border-radius: 50%;
+/* Composer field wraps the textarea so the attach button can dock inside it */
+.composer-field {
+  flex: 1;
+  min-width: 0;
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.composer-field textarea {
+  /* Leave room for the inline attach button docked at the right edge */
+  padding-right: 46px;
+}
+
+/* Attach (+) button: transparent, inside the field, anchored to the bottom-right */
+.attach-inline-btn {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  width: 36px;
+  height: 36px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-md);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2702,19 +2720,18 @@ a {
   transition: all var(--transition-fast);
 }
 
-.attach-btn:hover:not(:disabled) {
-  border-color: var(--accent-cyan);
+.attach-inline-btn:hover:not(:disabled) {
   color: var(--accent-cyan);
 }
 
-.attach-btn:disabled {
+.attach-inline-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
 
-.attach-btn svg {
-  width: 20px;
-  height: 20px;
+.attach-inline-btn svg {
+  width: 22px;
+  height: 22px;
 }
 
 .send-btn:hover:not(:disabled) {
@@ -5431,9 +5448,13 @@ body.capacitor-mobile .voice-btn {
   height: 52px;
 }
 
-body.capacitor-mobile .attach-btn {
-  width: 52px;
-  height: 52px;
+body.capacitor-mobile .attach-inline-btn {
+  width: 40px;
+  height: 40px;
+}
+
+body.capacitor-mobile .composer-field textarea {
+  padding-right: 50px;
 }
 
 /* Always show delete buttons on mobile (no hover) */
@@ -5493,10 +5514,6 @@ body.capacitor-mobile.keyboard-visible .chat-area {
   }
 
   .voice-btn:hover:not(:disabled) {
-    transform: none;
-  }
-
-  .attach-btn:hover:not(:disabled) {
     transform: none;
   }
 
