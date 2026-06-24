@@ -605,15 +605,12 @@ export function InputArea() {
     }
 
     if (e.key === 'Enter' && !e.shiftKey) {
-      if (e.nativeEvent.isComposing) {
-        // On Android, Enter during English swipe composition should still send.
-        // CJK IMEs use Enter to confirm characters, but for non-CJK the user
-        // expects Enter to submit. handleSubmit reads from the DOM to capture
-        // any in-flight composition text.
-        if (isNativeMobile()) {
-          e.preventDefault()
-          handleSubmit()
-        }
+      // Never submit while IME composition is active.
+      // Enter is often used to confirm candidates (Chinese/Japanese/Korean),
+      // and submitting here makes those languages impossible to type.
+      const imeKeyCode229 = (e.nativeEvent as unknown as { keyCode?: number }).keyCode === 229
+      const isComposing = e.nativeEvent.isComposing || composingRef.current || imeKeyCode229
+      if (isComposing) {
         return
       }
       e.preventDefault()
