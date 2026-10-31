@@ -50,6 +50,24 @@ export function supportsObjectConfigPatch(serverVersion: string | null | undefin
 }
 
 /**
+ * Returns true if the given server version string is >= v2026.3.22,
+ * which introduced the `dryRun` parameter for config.patch. Older servers
+ * silently ignore the flag and apply the patch for real, triggering a
+ * SIGUSR1 restart that drops in-flight chat streams.
+ */
+export function supportsDryRunConfigPatch(serverVersion: string | null | undefined): boolean {
+  if (!serverVersion) return false
+  const m = serverVersion.match(/v?(\d+)\.(\d+)\.(\d+)/)
+  if (!m) return false
+  const year = Number(m[1])
+  const month = Number(m[2])
+  const day = Number(m[3])
+  if (year !== 2026) return year > 2026
+  if (month !== 3) return month > 3
+  return day >= 22
+}
+
+/**
  * Validates a config patch without applying it (v2026.3.22 dry-run).
  * Returns structured validation errors if any.
  */

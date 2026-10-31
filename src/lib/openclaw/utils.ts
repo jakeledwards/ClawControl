@@ -537,3 +537,16 @@ export function generateUUID(): string {
     return v.toString(16)
   })
 }
+
+/**
+ * Normalize a model value to a display string. Servers can return either a
+ * plain string or `{ primary, fallbacks }` (model fallbacks, #23).
+ */
+export function resolveModel(m: unknown): string | undefined {
+  if (typeof m === 'string') return m || undefined
+  if (m && typeof m === 'object') {
+    const primary = (m as { primary?: unknown }).primary
+    if (typeof primary === 'string' && primary) return primary
+  }
+  return undefined
+}

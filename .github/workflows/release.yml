@@ -75,6 +75,10 @@ jobs:
       - name: Setup Android SDK
         if: matrix.platform == 'android'
         uses: android-actions/setup-android@v3
+        with:
+          # Default includes the legacy 'tools' package, which newer runner
+          # images no longer ship, so sdkmanager fails. Gradle fetches the rest.
+          packages: 'platform-tools'
 
       - name: Setup Gradle
         if: matrix.platform == 'android'

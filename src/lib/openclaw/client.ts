@@ -65,6 +65,8 @@ export class OpenClawClient {
   private healthCheckTimer: ReturnType<typeof setInterval> | null = null
   private static HEALTH_CHECK_INTERVAL = 15000 // 15s
   private static HEALTH_CHECK_TIMEOUT = 10000  // 10s
+  /** Cheap RPC used for liveness probes. Any response (even an error) counts. */
+  private static PROBE_METHOD = 'health'
   /** Timestamp of last received WebSocket message — used to skip redundant health checks. */
   private lastMessageAt = 0
   /** Server tick interval (from hello-ok policy), default 30s. */
@@ -147,10 +149,14 @@ export class OpenClawClient {
   }
 
   // Connection management
-  connect(): Promise<void> {
-    // Restore reconnect attempts (may have been zeroed by disconnect())
-    this.maxReconnectAttempts = OpenClawClient.DEFAULT_MAX_RECONNECT_ATTEMPTS
-    this.reconnectAttempts = 0
+  connect(isReconnect = false): Promise<void> {
+    // A fresh, user-initiated connect restores the reconnect budget (it may
+    // have been zeroed by disconnect()). Internal reconnects must NOT reset
+    // it, or backoff never grows and the budget is never exhausted.
+    if (!isReconnect) {
+      this.maxReconnectAttempts = OpenClawClient.DEFAULT_MAX_RECONNECT_ATTEMPTS
+      this.reconnectAttempts = 0
+    }
     return new Promise((resolve, reject) => {
       let settled = false
       const settle = (fn: typeof resolve | typeof reject, value?: any) => {
@@ -170,7 +176,6 @@ export class OpenClawClient {
         this.ws = this.wsFactory ? this.wsFactory(this.url) : new WebSocket(this.url)
 
         this.ws.onopen = () => {
-          this.reconnectAttempts = 0
           this.suppressReconnect = false
           this.certErrorEmitted = false
           this.startNetworkListener()
@@ -295,7 +300,7 @@ export class OpenClawClient {
 
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null
-      this.connect().catch((err) => {
+      this.connect(true).catch((err) => {
         console.warn(`[OpenClaw] Reconnect attempt ${this.reconnectAttempts} failed:`, err?.message || err)
       })
     }, delay)
@@ -341,7 +346,7 @@ export class OpenClawClient {
       if (Date.now() - this.lastMessageAt < OpenClawClient.HEALTH_CHECK_INTERVAL) return
 
       const id = (++this.requestId).toString()
-      const request = { type: 'req', method: 'skills.status', params: {}, id }
+      const request = { type: 'req', method: OpenClawClient.PROBE_METHOD, params: {}, id }
       let resolved = false
 
       const timeout = setTimeout(() => {
@@ -417,7 +422,7 @@ export class OpenClawClient {
       // immediate health check by sending a lightweight request.
       if (this.ws && this.ws.readyState === this.ws.OPEN && this.authenticated) {
         const id = (++this.requestId).toString()
-        const request = { type: 'req', method: 'skills.status', params: {}, id }
+        const request = { type: 'req', method: OpenClawClient.PROBE_METHOD, params: {}, id }
         // Timeout cleanup: if no response arrives, remove the pending request to avoid leaks
         const probeTimeout = setTimeout(() => {
           if (this.pendingRequests.has(id)) {
@@ -535,6 +540,9 @@ export class OpenClawClient {
 
   private handleMessage(data: string, resolve?: () => void, reject?: (err: Error) => void): void {
     this.lastMessageAt = Date.now()
+    // Any inbound frame proves the socket is alive. Servers that send ticks
+    // late (or not at all) under load used to get force-closed every 2× tick.
+    if (this.tickWatchTimer) this.resetTickWatch()
     try {
       const message = JSON.parse(data)
 
@@ -587,6 +595,7 @@ export class OpenClawClient {
             }
             this.pluginSurfaceUrls = collected
           }
+          this.reconnectAttempts = 0 // Handshake succeeded — reset backoff
           this.startHealthCheck()
           this.resetTickWatch() // Start watching for server ticks
           this.emit('connected', resFrame.payload)
@@ -1565,8 +1574,14 @@ export class OpenClawClient {
     return configApi.patchServerConfig(this._call.bind(this), patch, baseHash, useObjectPatch)
   }
 
-  /** Validate a config patch without applying it (v2026.3.22 dry-run). */
+  /** Validate a config patch without applying it (v2026.3.22 dry-run).
+   *  Older servers silently ignore the dryRun flag and apply the patch for
+   *  real, triggering a SIGUSR1 restart — so short-circuit to `valid` and
+   *  skip the RPC entirely when the server is too old. */
   async validateServerConfig(patch: object, baseHash: string): Promise<{ valid: boolean; errors?: Array<{ path: string; message: string }> }> {
+    if (!configApi.supportsDryRunConfigPatch(this.serverVersion)) {
+      return { valid: true }
+    }
     return configApi.validateServerConfig(this._call.bind(this), patch, baseHash)
   }
 
@@ -1627,6 +1642,43 @@ export class OpenClawClient {
   async rotateDeviceToken(deviceId: string, role: string, scopes?: string[]): Promise<void> { return nodesApi.rotateDeviceToken(this._call.bind(this), deviceId, role, scopes) }
   async revokeDeviceToken(deviceId: string, role: string): Promise<void> { return nodesApi.revokeDeviceToken(this._call.bind(this), deviceId, role) }
   async resolveExecApproval(approvalId: string, decision: nodesApi.ExecApprovalDecision): Promise<void> { return nodesApi.resolveExecApproval(this._call.bind(this), approvalId, decision) }
+
+  /**
+   * Actively verify the socket with a round-trip. Used on app resume, where
+   * iOS/Android may have silently killed the socket in the background. On
+   * failure the socket is force-closed so onclose triggers a reconnect.
+   */
+  probe(timeoutMs = 5000): Promise<boolean> {
+    const ws = this.ws
+    if (!ws || ws.readyState !== ws.OPEN || !this.authenticated) return Promise.resolve(false)
+    return new Promise((resolve) => {
+      const id = (++this.requestId).toString()
+      let done = false
+      const finish = (alive: boolean) => {
+        if (done) return
+        done = true
+        clearTimeout(timer)
+        this.pendingRequests.delete(id)
+        if (!alive && this.ws === ws) {
+          ws.onmessage = null
+          ws.close()
+        }
+        resolve(alive)
+      }
+      const timer = setTimeout(() => finish(false), timeoutMs)
+      // An RPC error still proves a live round-trip; a local 'Connection lost'
+      // rejection does not.
+      this.pendingRequests.set(id, {
+        resolve: () => finish(true),
+        reject: (err: Error) => finish(!/Connection lost/.test(err?.message || ''))
+      })
+      try {
+        ws.send(JSON.stringify({ type: 'req', method: OpenClawClient.PROBE_METHOD, params: {}, id }))
+      } catch {
+        finish(false)
+      }
+    })
+  }
 
   /** Lightweight liveness check — returns true if the server tick is recent (no RPC needed). */
   isAlive(): boolean {

@@ -100,11 +100,16 @@ function App() {
 
     // App lifecycle - reconnect on resume
     const cleanupApp = setupAppListeners(
-      () => {
-        const { connected, connect } = useStore.getState()
+      async () => {
+        const { connected, connect, client } = useStore.getState()
         if (!connected) {
           connect()
+          return
         }
+        // The OS may have killed the socket while backgrounded without
+        // firing onclose. Verify with a round-trip; reconnect if it's dead.
+        const alive = await client?.probe()
+        if (!alive && useStore.getState().client === client) connect()
       }
     )
 

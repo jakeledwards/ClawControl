@@ -780,6 +780,34 @@ describe('OpenClawClient', () => {
     })
   })
 
+  describe('reconnect reliability', () => {
+    it('does not reset backoff on internal reconnects', () => {
+      const c = new OpenClawClient('ws://localhost:1')
+      const anyC = c as any
+      anyC.reconnectAttempts = 5
+      anyC.maxReconnectAttempts = 20
+      // Internal reconnect keeps the attempt count so backoff keeps growing
+      c.connect(true).catch(() => {})
+      expect(anyC.reconnectAttempts).toBe(5)
+      // A user-initiated connect starts fresh
+      c.connect().catch(() => {})
+      expect(anyC.reconnectAttempts).toBe(0)
+      c.disconnect()
+    })
+
+    it('resets the tick watchdog on any inbound frame, not only ticks', () => {
+      const anyC = client as any
+      anyC.tickWatchTimer = setTimeout(() => {}, 1)
+      const spy = vi.spyOn(anyC, 'resetTickWatch')
+      anyC.handleMessage(JSON.stringify({ type: 'event', event: 'presence', payload: {} }))
+      expect(spy).toHaveBeenCalled()
+    })
+
+    it('probe() resolves false when not connected', async () => {
+      expect(await client.probe()).toBe(false)
+    })
+  })
+
   describe('disconnect', () => {
     it('should close the WebSocket connection', async () => {
       await client.connect()
