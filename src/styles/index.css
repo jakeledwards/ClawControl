@@ -956,7 +956,12 @@ a {
   border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-lg);
-  overflow: hidden;
+  /* Opens upward: cap the height and scroll so long agent lists don't push
+     "Create New Agent" off the top of the screen (#29). */
+  max-height: min(60vh, 480px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
   opacity: 0;
   visibility: hidden;
   transform: translateY(10px);
@@ -980,6 +985,19 @@ a {
 }
 
 .agent-option:hover {
+  background: var(--bg-hover);
+}
+
+/* Keep "Create New Agent" reachable while the list scrolls. */
+.agent-dropdown .create-new-agent-option {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border-default);
+}
+
+.agent-dropdown .create-new-agent-option:hover {
   background: var(--bg-hover);
 }
 
