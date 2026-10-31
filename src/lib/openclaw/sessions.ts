@@ -1,7 +1,7 @@
 // OpenClaw Client - Session API Methods
 
 import type { Session, RpcCaller } from './types'
-import { resolveSessionKey, toIsoTimestamp, isNoiseContent, stripAnsi, generateUUID } from './utils'
+import { resolveSessionKey, toIsoTimestamp, isNoiseContent, stripAnsi, generateUUID, resolveModel } from './utils'
 
 // Extract agentId from session key format "agent:{agentId}:{uuid}"
 function extractAgentIdFromKey(key?: string): string | undefined {
@@ -62,7 +62,7 @@ export async function listSessions(call: RpcCaller): Promise<Session[]> {
         fastMode: s.fastMode ?? undefined,
         verboseLevel: s.verboseLevel || undefined,
         reasoningLevel: s.reasoningLevel || undefined,
-        model: s.model || undefined,
+        model: resolveModel(s.model),
         modelProvider: s.modelProvider || undefined,
         inputTokens: s.inputTokens ?? undefined,
         outputTokens: s.outputTokens ?? undefined,
@@ -109,7 +109,7 @@ export async function getSession(call: RpcCaller, sessionKey: string): Promise<S
       fastMode: s.fastMode ?? undefined,
       verboseLevel: s.verboseLevel || undefined,
       reasoningLevel: s.reasoningLevel || undefined,
-      model: s.model || undefined,
+      model: resolveModel(s.model),
       modelProvider: s.modelProvider || undefined,
       inputTokens: s.inputTokens ?? undefined,
       outputTokens: s.outputTokens ?? undefined,

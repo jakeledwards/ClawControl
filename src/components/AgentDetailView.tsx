@@ -1,11 +1,8 @@
 import { useState, useRef, useEffect } from 'react'
 import { useStore } from '../store'
 import { showToast } from './ToastContainer'
+import { resolveModel } from '../lib/openclaw/utils'
 
-// Resolve model value — server can return string or { primary, fallbacks }
-function resolveModel(m: unknown): string | undefined {
-  return typeof m === 'string' ? m : (m as any)?.primary || undefined
-}
 
 export function AgentDetailView() {
   const { selectedAgentDetail, closeDetailView, saveAgentFile, refreshAgentFiles, deleteAgent, updateAgentModel, renameAgent } = useStore()

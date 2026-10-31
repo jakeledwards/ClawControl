@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm'
 import { openExternal } from '../lib/platform'
 import { useStore } from '../store'
 import { showToast } from './ToastContainer'
+import { resolveModel } from '../lib/openclaw/utils'
 import type { CronScheduleType, CronPayload, CronDelivery, CronSessionTarget, CronWakeMode } from '../lib/openclaw/types'
 
 export function CronJobDetailView() {
@@ -125,7 +126,7 @@ export function CronJobDetailView() {
     } else if (p?.kind === 'agentTurn') {
       setPayloadKind('agentTurn')
       setPayloadText(p.message || '')
-      setPayloadModel(p.model || '')
+      setPayloadModel(resolveModel(p.model) || '')
       setPayloadThinking(p.thinking || '')
       setPayloadTimeout(p.timeoutSeconds ? String(p.timeoutSeconds) : '')
     } else {
@@ -706,7 +707,7 @@ export function CronJobDetailView() {
                 {selectedCronJob.payload.kind === 'agentTurn' && selectedCronJob.payload.model && (
                   <div className="cron-config-row">
                     <span className="cron-config-label">Model</span>
-                    <span className="cron-config-value">{selectedCronJob.payload.model}</span>
+                    <span className="cron-config-value">{resolveModel(selectedCronJob.payload.model)}</span>
                   </div>
                 )}
               </>

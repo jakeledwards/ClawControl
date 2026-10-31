@@ -1,7 +1,7 @@
 // OpenClaw Client - Agent API Methods
 
 import type { Agent, RpcCaller } from './types'
-import { resolveAvatarUrl } from './utils'
+import { resolveAvatarUrl, resolveModel } from './utils'
 
 export async function listAgents(call: RpcCaller, wsUrl: string): Promise<Agent[]> {
   try {
@@ -52,7 +52,7 @@ export async function listAgents(call: RpcCaller, wsUrl: string): Promise<Agent[
         avatar: avatarUrl,
         emoji,
         theme: identity.theme,
-        model: a.model || a.config?.model || undefined,
+        model: resolveModel(a.model) || resolveModel(a.config?.model),
         thinkingLevel: a.thinkingLevel || a.config?.thinkingLevel || a.thinking || undefined,
         timeout: a.timeout ?? a.config?.timeout ?? undefined,
         configured: a.configured ?? a.config?.configured ?? undefined
