@@ -1565,8 +1565,14 @@ export class OpenClawClient {
     return configApi.patchServerConfig(this._call.bind(this), patch, baseHash, useObjectPatch)
   }
 
-  /** Validate a config patch without applying it (v2026.3.22 dry-run). */
+  /** Validate a config patch without applying it (v2026.3.22 dry-run).
+   *  Older servers silently ignore the dryRun flag and apply the patch for
+   *  real, triggering a SIGUSR1 restart — so short-circuit to `valid` and
+   *  skip the RPC entirely when the server is too old. */
   async validateServerConfig(patch: object, baseHash: string): Promise<{ valid: boolean; errors?: Array<{ path: string; message: string }> }> {
+    if (!configApi.supportsDryRunConfigPatch(this.serverVersion)) {
+      return { valid: true }
+    }
     return configApi.validateServerConfig(this._call.bind(this), patch, baseHash)
   }
 
