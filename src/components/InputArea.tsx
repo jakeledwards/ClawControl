@@ -654,13 +654,15 @@ export function InputArea() {
   }
 
   const handleChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
-    // On desktop, skip state update during IME composition to avoid fighting
-    // the keyboard buffer. On Android, always update — compositionend fires
-    // unreliably on many keyboards (Gboard gesture, auto-suggest) which can
-    // leave composingRef stuck true, blocking all input.
-    if (composingRef.current && platform !== 'android') return
+    // Always sync state, even mid-composition. The textarea is controlled, so
+    // skipping setMessage here makes React restore the old value on every
+    // keystroke, which wipes the IME buffer and makes Chinese/Japanese/Korean
+    // input impossible (#18, #30). Only defer slash completions and the
+    // length cap until the composition commits.
     const val = e.target.value
-    if (val.length > maxLength) {
+    if (composingRef.current) {
+      setMessage(val)
+    } else if (val.length > maxLength) {
       setMessage(val.slice(0, maxLength))
       updateSlashCompletions(val.slice(0, maxLength))
     } else {
